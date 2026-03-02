@@ -4,7 +4,35 @@
 
 **This section is the single source of truth.** Update it when server state changes. This doc is a living handoff between machines -- only describe what is true right now.
 
-### This Session (2026-03-02) — Fixes and UI Changes
+### This Session (2026-03-02 evening) — LDAP 403 Root Cause Found and Fixed
+
+**STATUS: LDAP fully working. QR enrollment confirmed. SA bind, user bind, group lookups all verified.**
+
+**Root cause of "403 Forbidden / Authentication credentials were not provided":**
+
+The Authentik LDAP outpost uses the field `bind_flow_slug` for ALL LDAP bind operations. This field maps to the provider's `authorization_flow`, **NOT** `authentication_flow`. The provider's `authorization_flow` had been set to `ldap-authorization-flow` (an empty pass-through flow with no stages). The outpost executed this empty flow, got an anonymous session (`"authenticated":false`), and then the `/api/v3/core/users/me/` call returned 403 because the session had no user identity.
+
+**THIS IS THE SINGLE MOST IMPORTANT THING TO KNOW:** Both `authentication_flow` and `authorization_flow` on the LDAP provider MUST point to `ldap-authentication-flow` (the flow with identification + password + login stages). If `authorization_flow` points to anything else, LDAP binds will fail with 403.
+
+**Three bugs fixed in app.py:**
+
+1. **Blueprint permission format** (line ~6691): `permission: search_full_directory` crashed the Authentik worker with `ValueError: For global permissions, first argument must be in format: 'app_label.codename'`. The worker retried endlessly, flooding PostgreSQL with connections ("Too many clients already"). **Fix:** Changed to `permission: authentik_providers_ldap.search_full_directory`.
+
+2. **LDAP outpost cookie domain mismatch** (line ~6796): The LDAP outpost connected to `http://authentik-server-1:9000` (Docker internal hostname), but `AUTHENTIK_COOKIE_DOMAIN=.{fqdn}` scoped session cookies to `*.{fqdn}`. Go's HTTP client stored the authenticated session cookie for `.{fqdn}` and never sent it to `authentik-server-1` because the domain didn't match. **Fix:** When FQDN is set, the LDAP outpost now connects via `https://authentik.{fqdn}` (matching the cookie domain) with `extra_hosts` to resolve DNS internally. When no FQDN, falls back to `http://authentik-server-1:9000` (no cookie domain issue since `AUTHENTIK_COOKIE_DOMAIN` is only set when FQDN exists).
+
+3. **Flow lookup pagination miss** (line ~8090): `_ensure_ldap_flow_authentication_none()` searched for the flow via `flows/instances/?designation=authentication` which returns paginated results. If `ldap-authentication-flow` wasn't on the first page, it was missed, and the code tried to CREATE the flow — failing with `400: slug already exists`. **Fix:** Changed to search by `slug=ldap-authentication-flow` directly.
+
+**How the fix was diagnosed (methodology for future reference):**
+
+1. Checked Authentik server logs: ALL outpost requests arrived as `auth_via: unauthenticated`
+2. Verified outpost token was valid (worked with direct curl)
+3. Used `tcpdump` inside Docker to capture actual HTTP headers from the outpost
+4. Found the session cookie being sent was `"sub":"anonymous","authenticated":false"`
+5. Traced the outpost Go source code: `bind_flow_slug` comes from `authorization_flow`
+6. Confirmed via `/api/v3/outposts/ldap/` that `bind_flow_slug: ldap-authorization-flow` (wrong)
+7. Set `authorization_flow` to `ldap-authentication-flow` → immediate fix
+
+### Prior Session (2026-03-02 morning) — UI and Deploy Fixes
 
 **Authentik deploy crash at Step 6:** `UnboundLocalError: local variable 're' referenced before assignment`. Step 6 (Patching Docker Compose) used `re.search()` but `import re` lived later in the same function (Step 10). Python treated `re` as local for the whole function, so it was unassigned at first use. **Fix:** Added `re` to top-level imports in `app.py` and removed the inner `import re` in Step 10.
 
@@ -22,123 +50,67 @@
 
 **Justin / TAK Portal feedback (for reference):** Use `takserver.pem` for CA (full chain). Portal may need restart after uploading certs. Future: adopt-existing workflow (detect TAK Server, Authentik, TAK Portal and offer to adopt into console).
 
-### LDAP Bind Issue — RESOLVED
+### LDAP Bind Issue — FULLY RESOLVED (2026-03-02)
 
-**Status:** LDAP bind is WORKING. Service account bind, user search, and TAK Server LDAP authentication all confirmed functional.
+**Status:** LDAP fully working. SA bind, user bind, user search, group lookups, TAK Server LDAP auth, and QR enrollment ALL confirmed functional.
 
 **Server:** `root@responder` (190.102.110.224)
 
-**Root Cause (Authentik 2026.2.0 breaking change):**
+**The Critical Rule (commit this to memory):**
 
-In Authentik 2026.2.0, the LDAP outpost reads the provider's `authorization_flow` as its `bind_flow_slug` — this is the flow used for LDAP bind operations. The `authentication_flow` field is NOT used by the outpost for binds.
+The Authentik LDAP outpost gets its bind flow from the provider's `authorization_flow` field (exposed as `bind_flow_slug` in the outpost API). It does NOT use `authentication_flow` for binds. **Both `authentication_flow` AND `authorization_flow` MUST point to `ldap-authentication-flow`** — the flow with identification, password, and login stages. If `authorization_flow` points to anything else (empty flow, consent flow, etc.), the outpost will execute that flow instead, get an anonymous session, and ALL binds will fail with 403.
 
-We had `authorization_flow` set to `default-provider-authorization-implicit-consent` (a consent-only flow with no identification/password/login stages). The outpost ran this flow for every bind, which never created an authenticated session. The follow-up `/api/v3/core/users/me/` call got 403 "Authentication credentials were not provided" because no session existed.
+**Full root cause chain (in order of discovery):**
 
-**Fix:** Set `authorization_flow` on the LDAP provider to `ldap-authentication-flow` (the same flow used for `authentication_flow`). This flow has identification, password, and user login stages, so a proper session is created during bind.
+1. **Blueprint permission format** — `permission: search_full_directory` crashed Authentik worker with ValueError. Worker retried endlessly, flooding PostgreSQL. **Fix:** `authentik_providers_ldap.search_full_directory`.
 
-**What was also fixed along the way:**
-- Added "Allow LDAP Access" expression policy (`return True`) to the LDAP application (needed because `policy_engine_mode: any` with 0 bindings = deny all)
-- LDAP outpost image updated from 2025.12.4 to 2026.2.0 to match the server version
-- `AUTHENTIK_COOKIE_DOMAIN` restored to `.test.takwerx.com` (required for SSO across subdomains)
+2. **Stage recursion** — identification stage had `password_stage` set, creating a loop. **Fix:** `password_stage: None`, `user_fields: ['username']` only.
 
-**What was wrong (root cause identified and partially fixed):**
+3. **LDAP app policy** — "Allow authentik Admins" policy binding blocked non-admin users. **Fix:** Removed restrictive policy binding from LDAP application.
 
-The Authentik blueprint (`~/authentik/blueprints/tak-ldap-setup.yaml`) defined LDAP flow stages with two properties that caused an infinite recursion loop in the LDAP outpost:
+4. **authorization_flow mismatch** (THE 403 root cause) — Provider's `authorization_flow` pointed to `ldap-authorization-flow` (empty). Outpost used this as its `bind_flow_slug`, executed an empty flow, got anonymous session, `/api/v3/core/users/me/` returned 403. **Fix:** Set `authorization_flow` to `ldap-authentication-flow`.
 
-1. **`configure_flow: !Find [authentik_flows.flow, [slug, default-password-change]]`** on the password stage (`ldap-authentication-password`) — When the outpost executed the password stage, it triggered a redirect to the password-change flow, which looped back infinitely.
-2. **`password_stage: !KeyOf ldap-authentication-password`** on the identification stage (`ldap-identification-stage`) — This embedded the password stage inside the identification stage, creating a double-password pattern that confused the LDAP outpost's flow executor.
+5. **Cookie domain mismatch** — `AUTHENTIK_COOKIE_DOMAIN=.{fqdn}` scoped session cookies to `*.{fqdn}`, but outpost connected to `http://authentik-server-1:9000` (internal hostname). Go's cookie jar stored the authenticated cookie for `.{fqdn}` and never sent it to `authentik-server-1`. **Fix:** LDAP outpost connects via `https://authentik.{fqdn}` with `extra_hosts` for DNS resolution.
 
-Because the blueprint uses `state: present`, Authentik re-applied these broken stage configurations on **every restart**, overwriting any API-level fixes.
-
-**What has been fixed (in app.py on local machine):**
-
-The blueprint definition in `app.py` (lines ~6340-6364) has been updated:
-- Removed `configure_flow: !Find [authentik_flows.flow, [slug, default-password-change]]` from the password stage
-- Removed `password_stage: !KeyOf ldap-authentication-password` from the identification stage
-- Removed `authentik.sources.ldap.auth.LDAPBackend` from password stage backends (not needed)
-- Removed `- email` from identification stage `user_fields` (LDAP only needs username)
-
-**What has been done on the live server:**
-
-1. Blueprint file on server (`~/authentik/blueprints/tak-ldap-setup.yaml`) was updated via `sed` — the four problematic lines were removed. Verified clean.
-2. The original blueprint stages (`ldap-identification-stage`, `ldap-authentication-password`, `ldap-authentication-login`) were no longer in the API (had been deleted during debugging). They should be recreated by blueprint reconciliation on Authentik restart.
-3. Three manually-created API stages (`ldap-identification`, `ldap-password`, `ldap-login`) were cleaned up (deleted via API).
-4. Authentik server + worker were restarted. Blueprint should have reconciled and recreated stages.
-5. LDAP outpost was force-recreated (`docker compose up -d --force-recreate ldap`).
-6. Password was set via API for user pk=54.
-7. `adm_ldapservice` (pk=54) **is confirmed in `authentik Admins` group** (verified via API, the group has users [4, 49, 54]).
-
-**What still fails and needs investigation:**
-
-```
-ldap_bind: Insufficient access (50)
-```
-Outpost log: `"Access denied for user"` (NOT "exceeded stage recursion depth" — that's fixed).
-
-This means the password stage succeeded (the user was authenticated) but the LDAP provider/application denied access. Possible causes to investigate:
-
-1. **Flow bindings may be broken** — When Step 4 ran (`Verify LDAP flow now has the blueprint's stages`), the output was EMPTY — meaning the flow has NO stage bindings. The blueprint may not have recreated them properly because we also manually deleted and created bindings via API earlier, leaving the flow in an inconsistent state. **Check first:** `curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:9090/api/v3/flows/bindings/?target=3e3c6348-439d-4cae-8818-28a3c64fdfae&ordering=order"` and verify 3 bindings exist (identification order 10, password order 15, login order 20).
-
-2. **`search_full_directory` permission not assigned** — The blueprint assigns this permission via `permissions: [{permission: search_full_directory, user: !KeyOf ldap-service-account}]` on the LDAP provider model. But user pk=54 was created via API (not blueprint), so `!KeyOf ldap-service-account` may reference a stale/different user object. The RBAC assign API returned HTTP 405 when we tried manually. Being in `authentik Admins` (superuser group) should bypass this, but may not for LDAP provider access specifically.
-
-3. **LDAP application policy binding** — There's a policy "Allow authentik Admins" bound to the LDAP application. If this binding got corrupted or deleted during our debugging, the application would deny access. Check: `curl -s -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:9090/api/v3/core/applications/?search=LDAP'` and verify the app exists and has correct provider.
-
-4. **Stale outpost configuration** — The outpost may have cached the old flow (with broken stages). Even after `--force-recreate`, if Authentik server hasn't fully reconciled the blueprint, the outpost gets stale data. Try: restart authentik server+worker, wait 60s, then recreate LDAP outpost.
-
-**Fix applied (2026-03-01):**
-
-`_ensure_ldap_flow_authentication_none()` in app.py now ensures the 3 stage bindings exist when the flow exists but has none (e.g. after manual deletion during debugging). When you run "Connect TAK Server to LDAP" in infra-TAK, it will:
-1. Patch authentication to none
-2. Check bindings count — if < 3, find stages by name and create bindings via API
-3. Force-recreate LDAP outpost (`docker compose up -d --force-recreate ldap`)
-
-**To fix on live server:** Run "Connect TAK Server to LDAP" from the TAK Server page in infra-TAK. Or run the diagnostic script: `./scripts/ldap-diagnose-and-fix.sh` (from repo root on server).
-
-**If bindings still empty after Connect:** Trigger blueprint reconciliation: `cd ~/authentik && docker compose restart worker && sleep 45`, then run Connect again.
+6. **Flow lookup pagination** — `_ensure_ldap_flow_authentication_none()` searched by `designation=authentication` (paginated). Flow could be missed on page 2+, causing "slug already exists" error. **Fix:** Search by `slug=ldap-authentication-flow` directly.
 
 **Diagnostic commands (run from `~/authentik`):**
 
 ```bash
 TOKEN=$(grep AUTHENTIK_BOOTSTRAP_TOKEN ~/authentik/.env | cut -d= -f2)
 
-# 1. Check flow bindings (should show 3 stages)
-echo "=== Flow bindings ==="
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:9090/api/v3/flows/bindings/?target=3e3c6348-439d-4cae-8818-28a3c64fdfae&ordering=order" | \
-  python3 -c "import sys,json; r=json.loads(sys.stdin.read())['results']; [print(f'  order={b[\"order\"]} stage={b.get(\"stage_obj\",{}).get(\"name\",\"?\")}') for b in r]"
-
-# 2. Check LDAP application + provider
-echo "=== LDAP app ==="
-curl -s -H "Authorization: Bearer $TOKEN" \
-  'http://127.0.0.1:9090/api/v3/core/applications/?search=LDAP' | \
-  python3 -c "import sys,json; r=json.loads(sys.stdin.read())['results']; [print(f'  name={a[\"name\"]} provider={a.get(\"provider\")} slug={a[\"slug\"]}') for a in r]"
-
-# 3. Check LDAP provider details
+# 1. Check LDAP provider flows (MOST IMPORTANT — both must show ldap-authentication-flow)
 echo "=== LDAP provider ==="
 curl -s -H "Authorization: Bearer $TOKEN" \
   'http://127.0.0.1:9090/api/v3/providers/ldap/?search=LDAP' | \
-  python3 -c "import sys,json; r=json.loads(sys.stdin.read())['results']; [print(f'  pk={p[\"pk\"]} name={p[\"name\"]} auth_flow={p.get(\"authorization_flow\")} bind_mode={p.get(\"bind_mode\")}') for p in r]"
+  python3 -c "import sys,json; r=json.loads(sys.stdin.read())['results']; [print(f'  pk={p[\"pk\"]} auth_flow={p.get(\"authentication_flow\")} authz_flow={p.get(\"authorization_flow\")} bind_mode={p.get(\"bind_mode\")}') for p in r]"
 
-# 4. Check user
-echo "=== User ==="
+# 2. Check outpost bind_flow_slug (must be ldap-authentication-flow)
+echo "=== Outpost config ==="
 curl -s -H "Authorization: Bearer $TOKEN" \
-  'http://127.0.0.1:9090/api/v3/core/users/54/' | \
-  python3 -c "import sys,json; u=json.loads(sys.stdin.read()); print(f'  pk={u[\"pk\"]} username={u[\"username\"]} active={u[\"is_active\"]} groups={[g[\"name\"] for g in u.get(\"groups_obj\",[])]}')"
+  'http://127.0.0.1:9090/api/v3/outposts/ldap/' | \
+  python3 -c "import sys,json; r=json.loads(sys.stdin.read())['results']; [print(f'  name={p.get(\"name\")} bind_flow={p.get(\"bind_flow_slug\")}') for p in r]"
 
-# 5. Check outpost logs
+# 3. Check flow bindings (should show 3 stages)
+echo "=== Flow bindings ==="
+curl -s -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9090/api/v3/flows/instances/?slug=ldap-authentication-flow' | \
+  python3 -c "import sys,json; r=json.loads(sys.stdin.read())['results']; pk=r[0]['pk'] if r else 'NOT FOUND'; print(f'  flow_pk={pk}')"
+
+# 4. Check outpost logs (look for "successfully authenticated" or errors)
 echo "=== Recent LDAP outpost logs ==="
-docker compose logs ldap --tail=10 --no-log-prefix 2>/dev/null
+docker compose logs ldap --tail=15 --no-log-prefix 2>/dev/null
 
-# 6. Test bind
+# 5. Test SA bind
 LDAP_PASS=$(grep AUTHENTIK_BOOTSTRAP_LDAPSERVICE_PASSWORD ~/authentik/.env | cut -d= -f2-)
-echo "=== Bind test ==="
+echo "=== SA bind test ==="
 ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap' -w "$LDAP_PASS" -b 'dc=takldap' -s base '(objectClass=*)' 2>&1 | head -5
 ```
 
 ### What's Deployed on the Server
 - **Caddy** -- running, TLS for subdomains
-- **Authentik** -- running (server, worker, postgres, redis, LDAP outpost). Blueprint file has been fixed (configure_flow and password_stage removed).
-- **TAK Server** -- STOPPED (`sudo systemctl stop takserver` — stopped during LDAP debugging to prevent connection flooding)
+- **Authentik** -- running (server, worker, postgres, LDAP outpost). Blueprint + provider correctly configured.
+- **TAK Server** -- running (systemd), CoreConfig has LDAP section, connected to Authentik LDAP
 - **TAK Portal** -- running (Docker)
 - **Email Relay** -- running, SMTP + recovery flow auto-configured in Authentik
 - **MediaMTX** -- running (LDAP overlay deployed, stream visibility, share links, themed viewer all working)
@@ -147,6 +119,9 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 - All services deploy and run (Authentik-first deployment order verified on fresh VPS)
 - Authentik SSO via Caddy forward_auth (infratak, takportal, nodered, mediamtx subdomains)
 - Password recovery flow (forgot username or password -> email -> reset -> login)
+- **LDAP bind — SA and user bind both working** (verified via ldapsearch and outpost logs)
+- **QR enrollment — confirmed working** (user scans QR, connects to TAK Server, LDAP auth succeeds)
+- **LDAP group lookups** — memberOf attributes correctly returned (tak_CA-COR TRT, tak_CA-COR HAZMAT, etc.)
 - TAK Server 8443 (cert auth), 8446 (password auth via LDAP, admin console works for webadmin)
 - TAK Portal user creation -> Authentik user creation
 - **No user-profile.pref popup** -- fixed by stripping extra LDAP attributes
@@ -158,7 +133,7 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 - **TAK Portal group filtering** -- `GROUPS_HIDDEN_PREFIXES` hides `vid_` and `tak_ROLE_` groups
 
 ### What's Broken (Verified)
-- **LDAP bind fails with "Insufficient access (50)"** — See CRITICAL section above. This blocks TAK Server LDAP auth and QR registration.
+- Nothing critical. LDAP fully resolved.
 
 ### Changes Made to app.py (Cumulative)
 
@@ -174,7 +149,13 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 
 6. **Self-healing MediaMTX overlay** — `ensure_overlay.py` re-injects overlay on service start if upstream updates overwrite it.
 
-7. **Session 2026-03-02:** Top-level `import re` (fix Authentik Step 6 UnboundLocalError). TAK Portal CA: prefer `takserver.pem`, else build bundle from `ca.pem` + `root-ca.pem`. `_ensure_authentik_console_app`: provider search by name, application verification/recreation. LDAP outpost image tag synced from server tag in compose. MediaMTX deploy log: no auto-reload, Refresh button. Authentik next steps UI: configure SMTP → TAK Server → TAK Portal; "additional Admin users" wording; healthy bar with Email Relay, TAK Server, TAK Portal buttons. Removed "Fix LDAP bindings" button.
+7. **Session 2026-03-02 morning:** Top-level `import re` (fix Authentik Step 6 UnboundLocalError). TAK Portal CA: prefer `takserver.pem`, else build bundle from `ca.pem` + `root-ca.pem`. `_ensure_authentik_console_app`: provider search by name, application verification/recreation. LDAP outpost image tag synced from server tag in compose. MediaMTX deploy log: no auto-reload, Refresh button. Authentik next steps UI: configure SMTP → TAK Server → TAK Portal; "additional Admin users" wording; healthy bar with Email Relay, TAK Server, TAK Portal buttons. Removed "Fix LDAP bindings" button.
+
+8. **Session 2026-03-02 evening (LDAP 403 fix):**
+   - **Blueprint permission format** (line ~6691): `search_full_directory` → `authentik_providers_ldap.search_full_directory` (prevents worker crash).
+   - **LDAP outpost AUTHENTIK_HOST** (lines ~6796-6800): When FQDN is set, outpost connects via `https://authentik.{fqdn}` with `extra_hosts` (prevents cookie domain mismatch). No FQDN: falls back to `http://authentik-server-1:9000`.
+   - **Flow lookup fix** (lines ~8090-8094): `_ensure_ldap_flow_authentication_none()` now searches by `slug=ldap-authentication-flow` instead of `designation=authentication` (prevents pagination miss / slug-already-exists 400).
+   - **JavaScript fix in TAKSERVER_TEMPLATE**: Moved `resyncLdap` and `syncWebadmin` functions to top of script block; escaped newlines in confirm() dialogs.
 
 ### Key Files Changed
 - `app.py` — Blueprint fix (configure_flow/password_stage removed), LDAP verification, TAK Portal email/URL fixes, MediaMTX self-healing overlay; plus (2026-03-02) re import, TAK Portal CA bundle/takserver.pem, infratak app creation, LDAP outpost version sync, MediaMTX deploy log UX, Authentik next-steps UI
@@ -220,7 +201,7 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 | **Purpose** | Unified web console for deploying and managing TAK ecosystem infrastructure (TAK Server, Authentik SSO, LDAP, Caddy reverse proxy, TAK Portal, Node-RED, MediaMTX, CloudTAK, Email Relay) |
 | **Intended users** | System administrators deploying TAK (Team Awareness Kit) infrastructure |
 | **Operating environment** | Ubuntu 22.04/24.04 or Rocky Linux 9, single VPS, accessible via `https://<ip>:5001` (backdoor) or `https://infratak.<fqdn>` (behind Authentik) |
-| **Current completion status** | Alpha. All modules deploy. LDAP blueprint fixed in code. Active LDAP bind access issue on live server. |
+| **Current completion status** | Alpha. All modules deploy. LDAP fully working (SA bind, user bind, QR enrollment verified). |
 
 ---
 
@@ -316,7 +297,7 @@ The `ldap-authentication-flow` is defined in `tak-ldap-setup.yaml` blueprint wit
 | Python 3 / Flask | Latest | Web console backend |
 | Docker / Docker Compose | 29.x | Authentik, TAK Portal, Node-RED, CloudTAK |
 | Caddy | Latest | Reverse proxy, auto-TLS, forward_auth |
-| Authentik | 2025.12.4 | SSO, LDAP provider, proxy provider |
+| Authentik | 2026.2.0 | SSO, LDAP provider, proxy provider |
 | TAK Server | 5.6-RELEASE-6 | CoT server, installed via .deb |
 | Postfix | System | Email relay for password recovery |
 | psutil | Latest | System metrics |
@@ -367,13 +348,26 @@ The `ldap-authentication-flow` is defined in `tak-ldap-setup.yaml` blueprint wit
 - **Why**: `require_outpost` caused "Flow does not apply to current user" -- the outpost was not recognized when executing user binds. The flow is only reachable via LDAP on port 389, so `none` adds no security risk.
 - **Implementation**: Blueprint has `authentication: none`; "Connect TAK Server to LDAP" runs `_ensure_ldap_flow_authentication_none()` which PATCHes the live flow and restarts the LDAP outpost
 
-### 4.5 LDAP outpost token injection
+### 4.5 LDAP provider authorization_flow = authentication_flow (CRITICAL)
+
+- **Decision**: Both `authentication_flow` and `authorization_flow` on the LDAP provider point to `ldap-authentication-flow`
+- **Why**: The outpost reads `authorization_flow` as its `bind_flow_slug` — this is the flow executed for every LDAP bind. Despite the name, `authentication_flow` is NOT used for binds. If `authorization_flow` points to an empty or consent-only flow, no authenticated session is created, and all binds fail with 403 on the `/api/v3/core/users/me/` call.
+- **How discovered**: tcpdump + Go source analysis of the LDAP outpost. The `FlowExecutor` reads `bind_flow_slug` which maps to `authorization_flow` in the provider API.
+- **NEVER change `authorization_flow` to a different flow** (consent flow, empty flow, etc.) — this silently breaks ALL LDAP binds.
+
+### 4.5b LDAP outpost AUTHENTIK_HOST and cookie domain matching
+
+- **Decision**: When FQDN is set, LDAP outpost `AUTHENTIK_HOST` = `https://authentik.{fqdn}` with `extra_hosts` for DNS. When no FQDN, = `http://authentik-server-1:9000`.
+- **Why**: `AUTHENTIK_COOKIE_DOMAIN=.{fqdn}` scopes session cookies to `*.{fqdn}`. After a successful flow execution, the outpost stores an authenticated session cookie. If the outpost's `AUTHENTIK_HOST` doesn't match the cookie domain (e.g., it connects to `authentik-server-1`), Go's `http.CookieJar` never sends the cookie, and subsequent API calls (like `/api/v3/core/users/me/`) return 403 anonymous.
+- **`extra_hosts`**: Maps `authentik.{fqdn}` to `host-gateway` (Docker's host IP) so the LDAP container can resolve the FQDN internally without external DNS / hairpin NAT.
+
+### 4.6 LDAP outpost token injection
 
 - **Decision**: Docker-compose starts LDAP with `AUTHENTIK_TOKEN: placeholder`, then Step 11 injects the real token and recreates the container
 - **Why**: The real token doesn't exist until after Authentik is running and the blueprint creates the outpost
 - **Risk**: If token injection fails, the LDAP outpost runs with an invalid token and stays unhealthy
 
-### 4.6 Caddy forward_auth pattern
+### 4.7 Caddy forward_auth pattern
 
 - **Decision**: Caddy uses `forward_auth 127.0.0.1:9090` with Authentik's embedded outpost
 - **Why**: Native Caddy integration, no separate proxy container needed
@@ -381,13 +375,13 @@ The `ldap-authentication-flow` is defined in `tak-ldap-setup.yaml` blueprint wit
 - **Backdoor**: `infratak.<fqdn>/login*` skips `forward_auth` so the console password login always works
 - **MediaMTX bypasses**: `/watch/*`, `/hls-proxy/*`, `/shared/*`, `/shared-hls/*` bypass `forward_auth` on the stream subdomain for public/shared stream access
 
-### 4.7 Service account in authentik Admins group
+### 4.8 Service account in authentik Admins group
 
 - **Decision**: `adm_ldapservice` is added to the `authentik Admins` group (superuser)
 - **Why**: Workaround for Authentik bug where `search_full_directory` permission doesn't work reliably
 - **Risk**: Overprivileged service account
 
-### 4.8 CoreConfig LDAP stanza -- matches TAK Portal reference
+### 4.9 CoreConfig LDAP stanza -- matches TAK Portal reference
 
 - **Decision**: The `<ldap>` element uses only the attributes from TAK Portal's known-good reference, plus `adminGroup="ROLE_ADMIN"`
 - **Why**: Extra attributes (`style="DS"`, `ldapSecurityType="simple"`, `groupObjectClass`, `userObjectClass`, `matchGroupInChain`, `roleAttribute`) caused a phantom `user-profile.pref` push to TAK clients on connect. Stripping them fixed the issue. `adminGroup="ROLE_ADMIN"` is required for webadmin to access the admin console (without it, everyone gets WebTAK).
@@ -402,31 +396,31 @@ The `ldap-authentication-flow` is defined in `tak-ldap-setup.yaml` blueprint wit
   ```
 - **Our addition**: `adminGroup="ROLE_ADMIN"` appended
 
-### 4.9 CoreConfig auth block structure
+### 4.10 CoreConfig auth block structure
 
 - **Decision**: The `<auth>` block uses `<ldap .../>` before `<File .../>` (not the other way around)
 - **Why**: Matches the known-good CoreConfig from a working deployment. Reversing the order caused issues.
 - **Critical attributes on `<auth>`**: `x509groups="true"`, `x509useGroupCache="true"`, `x509useGroupCacheDefaultActive="true"`, `x509checkRevocation="true"` -- without these, TAK clients get disconnected when webadmin logs into 8446
 
-### 4.10 CoreConfig LDAP detection
+### 4.11 CoreConfig LDAP detection
 
 - **Decision**: Check for substring `adm_ldapservice` in CoreConfig, not `serviceAccountDN="cn=adm_ldapservice"`
 - **Why**: The full attribute value is `serviceAccountDN="cn=adm_ldapservice,ou=users,dc=takldap"` -- checking for `serviceAccountDN="cn=adm_ldapservice"` (with closing `"`) never matches because `"` follows `dc=takldap`, not `adm_ldapservice`. This bug caused false negatives.
 
-### 4.11 MediaMTX LDAP overlay (deploy-time patching)
+### 4.12 MediaMTX LDAP overlay (deploy-time patching)
 
 - **Decision**: Keep one branch on the MediaMTX repo (vanilla editor). infra-TAK applies `mediamtx_ldap_overlay.py` at deploy time when Authentik is detected.
 - **Why**: Standalone MediaMTX users get the vanilla editor unchanged. infra-TAK users get Authentik header auth + Stream Access page without maintaining a separate LDAP branch.
 - **Implementation**: Copy overlay file, inject gated import (`LDAP_ENABLED` env var) before `app.run()`, set env vars in systemd service.
 - **Self-healing**: `ensure_overlay.py` runs as `ExecStartPre` in the systemd service. If the upstream editor self-updates and overwrites the overlay injection, this script re-applies it on every service start.
 
-### 4.12 App access policies (automated)
+### 4.13 App access policies (automated)
 
 - **Decision**: Auto-create and bind Authentik policies during Authentik deploy
 - **Why**: Regular users should only see TAK Portal tile. Admins see everything. MediaMTX visible to vid_* group members.
 - **Implementation**: `_ensure_app_access_policies()` creates "Allow authentik Admins" (group membership) and "Allow MediaMTX users" (expression policy checking vid_private OR vid_public OR authentik Admins). Idempotent -- safe to run on every deploy.
 
-### 4.13 Blueprint password management
+### 4.14 Blueprint password management
 
 - **Decision**: The blueprint `authentik_core.user` model does NOT set `password` (the line `password: !Context password` was removed)
 - **Why**: With `state: created`, Authentik only applies the user model once. But `state: present` or blueprint reconciliation could overwrite the API-set password with a hashed version of the env var, causing LDAP bind failures. The password is set exclusively via the Authentik API (`/api/v3/core/users/{pk}/set_password/`) after user creation.
@@ -457,11 +451,15 @@ The `ldap-authentication-flow` is defined in `tak-ldap-setup.yaml` blueprint wit
 | 17 | **"exceeded stage recursion depth"** | **Blueprint password stage had `configure_flow` pointing to default-password-change; identification stage had embedded `password_stage`** | **Removed both from blueprint. The `configure_flow` redirected on auth failure, creating infinite loop. The embedded `password_stage` created double-password pattern. Fixed in blueprint definition in app.py.** |
 | 18 | **Blueprint overwrites API fixes** | **`state: present` in blueprint re-applies stage config on every Authentik restart** | **Must fix the blueprint file itself, not just API. Any API-only fix gets overwritten.** |
 | 19 | **Blueprint overwrites service account password** | **`password: !Context password` in user model caused password drift** | **Removed password line from blueprint user model. Password set exclusively via API.** |
-| 20 | **"Access denied for user" after flow fix** | **Likely missing flow bindings or stale permission state after extensive API manipulation** | **IN PROGRESS — see Critical section above** |
+| 20 | **"Access denied for user" after flow fix** | **LDAP app policy binding restricted to "authentik Admins" group** | **Deleted restrictive policy binding from LDAP application via API** |
 | 21 | Authentik deploy Step 6 crash | `re` used before assignment (inner `import re` in same function) | Top-level `import re`, remove inner import |
 | 22 | TAK Portal dashboard -- / not connected | CA single cert or TRUSTED CERTIFICATE format; missing full chain | Use takserver.pem or ca.pem+root-ca.pem bundle |
 | 23 | infratak app missing after redeploy | Provider search used slug; app never recreated if missing | Search by provider name; verify apps exist, recreate if 404 |
 | 24 | LDAP outpost version mismatch | Hardcoded LDAP image tag | Read server tag from compose, set LDAP image to same |
+| 25 | **403 "Authentication credentials were not provided" on all LDAP binds** | **Provider `authorization_flow` pointed to empty flow; outpost uses it as `bind_flow_slug`, NOT `authentication_flow`** | **Set both `authentication_flow` AND `authorization_flow` to `ldap-authentication-flow`** |
+| 26 | **Cookie domain mismatch for LDAP outpost** | **Outpost connected to Docker internal hostname; `AUTHENTIK_COOKIE_DOMAIN` scoped cookies to FQDN; Go cookie jar never sent auth cookies** | **LDAP outpost `AUTHENTIK_HOST` = `https://authentik.{fqdn}` with `extra_hosts` when FQDN set** |
+| 27 | **Blueprint permission ValueError** | **`search_full_directory` not in `app_label.codename` format; worker crash-looped, flooding PostgreSQL** | **Changed to `authentik_providers_ldap.search_full_directory`** |
+| 28 | **Flow lookup "slug already exists" 400** | **Searched by `designation=authentication` (paginated), missed flow, tried to recreate** | **Search by `slug=ldap-authentication-flow` directly** |
 
 ---
 
@@ -497,8 +495,7 @@ When LDAP breaks: check outpost logs FIRST for the specific error. "exceeded sta
 
 ### HIGH
 
-- **LDAP "Insufficient access" on live server** — Active issue, see Section 0
-- `search_full_directory` permission throws `ValueError` in Authentik 2025.x blueprints -- workaround is superuser via Admins group
+- `search_full_directory` permission requires `authentik_providers_ldap.search_full_directory` format — workaround is superuser via Admins group
 - Single 550KB `app.py` file
 - No automated tests
 - No CI/CD pipeline
@@ -546,12 +543,15 @@ cd ~/infra-TAK && chmod +x start.sh && sudo ./start.sh
 
 - TAK Server is a **systemd service**, NOT Docker. `sudo systemctl restart takserver` after CoreConfig changes.
 - LDAP outpost maps host port **389->3389** (not 389->389).
-- `authentik_host` in LDAP outpost config = `http://authentik-server-1:9000/` (Docker internal). Embedded outpost = public URL. These are DIFFERENT.
+- `authentik_host` for LDAP outpost: when FQDN is set, uses `https://authentik.{fqdn}` with `extra_hosts` (must match cookie domain). When no FQDN, uses `http://authentik-server-1:9000` (Docker internal). Embedded outpost always uses public URL. These are DIFFERENT.
+- **The outpost `bind_flow_slug` comes from the provider's `authorization_flow`, NOT `authentication_flow`.** This is the #1 LDAP debugging gotcha.
 - The LDAP stanza MUST match TAK Portal's reference. Extra attributes cause phantom device profile pushes.
 - `adm_ldapservice` user pk is **54** on the current server (was recreated during debugging — original was pk=48).
 
 ### Gotchas
 
+- **LDAP provider `authorization_flow` = `bind_flow_slug`** — This is the flow executed for EVERY LDAP bind. `authentication_flow` is NOT used. Both must be `ldap-authentication-flow`. If wrong, you get 403 on all binds.
+- **LDAP outpost `AUTHENTIK_HOST` must match cookie domain** — If `AUTHENTIK_COOKIE_DOMAIN=.{fqdn}`, the outpost must connect to a `*.{fqdn}` hostname, not a Docker internal name.
 - **`ldapsearch` CLI is UNRELIABLE** against Authentik's LDAP outpost. Use Docker logs.
 - **Authentik blueprints with `state: present`** re-apply on every restart. API changes get overwritten. FIX THE BLUEPRINT FILE.
 - **Browser cache** aggressively caches Authentik login pages. Hard refresh often needed.
@@ -578,13 +578,23 @@ cd ~/infra-TAK && chmod +x start.sh && sudo ./start.sh
 
 ### Authentik LDAP Flow Architecture (MUST understand to debug)
 
+**THE CRITICAL MAPPING:**
+```
+Provider Field             → Outpost Behavior
+authentication_flow        → NOT used for binds (confusingly named)
+authorization_flow         → bind_flow_slug (THIS is what runs for every LDAP bind)
+```
+Both fields MUST point to `ldap-authentication-flow`. If `authorization_flow` is wrong, binds will silently fail with 403.
+
+**Cookie domain constraint:** The LDAP outpost stores an authenticated session cookie after flow execution. `AUTHENTIK_COOKIE_DOMAIN` scopes these cookies. The outpost's `AUTHENTIK_HOST` must match the cookie domain or cookies won't be sent on subsequent requests. When FQDN is set: outpost connects via `https://authentik.{fqdn}` (matches `.{fqdn}` cookie domain). When no FQDN: outpost connects via `http://authentik-server-1:9000` (no cookie domain set).
+
 ```
 LDAP Bind Request (port 389)
   → LDAP Outpost Container (authentik-ldap-1)
     → Extracts username from bind DN (cn=USERNAME,ou=users,dc=takldap)
     → Checks session cache (bind_mode: cached)
       → If cached session matches DN+password hash: return success immediately
-      → If no cache hit: execute ldap-authentication-flow
+      → If no cache hit: execute bind_flow_slug (= provider's authorization_flow)
         → Stage 1 (order 10): ldap-identification-stage
           - Finds user by username field
           - MUST NOT have password_stage (causes recursion)
@@ -592,16 +602,20 @@ LDAP Bind Request (port 389)
           - Verifies password against InbuiltBackend
           - MUST NOT have configure_flow (causes recursion)
         → Stage 3 (order 20): ldap-authentication-login
-          - Creates session
-        → Flow complete: bind succeeds
-    → After successful flow: cache the session
+          - Creates authenticated session
+        → Flow complete: session cookie stored
+    → Outpost calls /api/v3/core/users/me/ with session cookie
+      → Cookie domain MUST match AUTHENTIK_HOST or this returns 403
+    → If user info retrieved: bind succeeds, cache session
     → Return LDAP bind result to client
 ```
 
 Error decoding:
 - `exceeded stage recursion depth` = flow stage misconfiguration (configure_flow, password_stage, MFA)
 - `Invalid credentials (49)` = password wrong OR flow failed to execute
-- `Insufficient access (50)` / `Access denied for user` = user authenticated but not authorized for LDAP provider
+- `Insufficient access (50)` / `Access denied for user` = user authenticated but not authorized for LDAP application
+- `403 Authentication credentials were not provided` = cookie domain mismatch OR authorization_flow is wrong (no session created)
+- `Flow does not apply to current user` = flow `authentication` setting is wrong (should be `none`)
 - `authenticated from session` in logs = using cached bind (may mask underlying flow issues)
 
 ---
