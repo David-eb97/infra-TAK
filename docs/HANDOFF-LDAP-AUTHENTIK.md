@@ -1,8 +1,35 @@
 # infra-TAK Technical Handoff Document
 
-## 0. Current Session State (Last Updated: 2026-03-02)
+## 0. Current Session State (Last Updated: 2026-03-02 night)
 
 **This section is the single source of truth.** Update it when server state changes. This doc is a living handoff between machines -- only describe what is true right now.
+
+### v0.1.8-alpha Release (2026-03-02 night)
+
+**LDAP QR registration fix:** LDAP app was restricted to authentik Admins (in `admin_only_slugs`), blocking QR enrollment for non-admin users. **Fix:** Removed `ldap` from `admin_only_slugs`; added loop in `_ensure_app_access_policies` to remove "Allow authentik Admins" binding from LDAP app if present; Connect LDAP now runs `_ensure_app_access_policies` so the fix applies on Resync. LDAP is open to all authenticated users.
+
+**Fresh deploy flow:** 8446 webadmin login and QR registration work on initial deployment without manual Sync webadmin or Resync LDAP. `_ensure_authentik_webadmin()` (includes LDAP outpost restart) runs at end of TAK Server deploy and during Connect LDAP.
+
+**Authentik deploy:** Caddy reload had no timeout → could hang indefinitely. Added 30s timeout. Added progress message "Updating Caddy config..." before slow steps so log doesn't appear stuck.
+
+**README:** 8 cores, 32 GB RAM recommended for full stack. Updated deployment order: Caddy → Authentik → Email Relay → TAK Server → Connect LDAP → TAK Portal → Node-RED/CloudTAK/MediaMTX.
+
+**Git workflow:** dev = full workspace (handoff, prompts, etc.). main = public-facing only. **Never merge dev into main.** Use selective checkout:
+```bash
+git checkout main
+git checkout dev -- app.py mediamtx_ldap_overlay.py README.md start.sh .gitignore TESTING.md fix-console-after-pull.sh reset-console-password.sh docs/MEDIAMTX-TAKPORTAL-ACCESS.md docs/WORKFLOW-8446-WEBADMIN.md docs/RELEASE-v0.1.8-alpha.md
+git add -A && git status   # verify
+git commit -m "v0.1.8-alpha"
+git push origin main
+git checkout dev
+```
+Exclude from main: HANDOFF, COMMANDS, PROMPT, email-template (optional).
+
+**Removed:** `scripts/fix-mediamtx-stream-redirect.sh`, `scripts/ldap-diagnose-and-fix.sh` (optional diagnostic scripts, user deleted).
+
+**`.gitignore`:** Added `uploads/` and `ignite/` to prevent accidental commit of deployment artifacts.
+
+**Release:** `docs/RELEASE-v0.1.8-alpha.md` — copy contents when creating GitHub release for tag v0.1.8-alpha.
 
 ### Help Page and Uninstall-All (2026-03-02)
 
