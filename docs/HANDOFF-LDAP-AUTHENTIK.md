@@ -662,7 +662,7 @@ When LDAP breaks: check outpost logs FIRST for the specific error. "exceeded sta
 ### Fresh Deployment
 
 ```bash
-git clone -b dev https://github.com/takwerx/infra-TAK.git ~/infra-TAK
+git clone --depth 1 -b dev https://github.com/takwerx/infra-TAK.git ~/infra-TAK
 cd ~/infra-TAK && chmod +x start.sh && sudo ./start.sh
 ```
 
