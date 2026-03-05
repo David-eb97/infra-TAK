@@ -241,9 +241,37 @@ When you scan the QR code and the client connects but says **No channels found**
    TAK Server needs at least one Input and one Output in CoreConfig. A fresh install usually has defaults. If you replaced or heavily edited CoreConfig and removed all connections, add them back (or restore a known-good CoreConfig) and restart TAK Server.
 
 5. **New groups not synced yet**  
-   TAK Server refreshes group membership from LDAP every 60 seconds. Right after you add a user or assign groups in TAK Portal, the client may connect before the next sync and see no channels. **Have the client disconnect and reconnect** (or close and reopen ATAK) after 1–2 minutes; channels should then appear. No server restart needed.
+   TAK Server refreshes group membership from LDAP on an interval (30 seconds with infra-TAK’s default). Right after you add a user or assign groups in TAK Portal, the client may connect before the next refresh and see no channels. **Have the client disconnect and reconnect** (or close and reopen ATAK) after ~30–45 seconds; channels should then appear. No server restart needed.
 
-**Quick sequence:** Ensure the user has a TAK group in TAK Portal → run **Connect LDAP** if needed → if no channels, have the client reconnect after ~1 min.
+**Quick sequence:** Ensure the user has a TAK group in TAK Portal → run **Connect LDAP** if needed → if no channels, have the client reconnect after ~30–45 s.
+
+### Why do I get on the server but see no channels?
+
+You create the user and assign groups at the same time; Portal → Authentik sync is nearly instant, so the user and their groups are in LDAP right away. So how can you get on the server (auth OK) but have no channels?
+
+**What happens step by step when you connect:**
+
+1. **Client connects** (e.g. QR scan). TAK Server needs to: (a) decide “is this user allowed on?” and (b) decide “what channels do they get?”
+
+2. **Auth (“are you allowed on?”)**  
+   TAK Server does a **direct LDAP check**: “Does this user exist? Bind/lookup.” Your user is already in LDAP (Portal synced them). LDAP says yes → **you get on.** So you’re connected to the server.
+
+3. **Channels (“what do you see?”)**  
+   TAK Server does **not** do a fresh “what groups is this user in?” LDAP query on every new connection. It uses an internal **cache**: “user → list of groups.” That cache is filled and refreshed from LDAP on an interval (CoreConfig **`updateinterval`**; infra-TAK sets it to **30** seconds). So when you connect for the first time:
+   - You’re a new user; you’re either not in the cache yet, or you’re in the cache with an empty group list from before the next refresh ran.
+   - TAK Server answers the client’s “give me my channels” request from that cache → empty list → **no channels** in ATAK even though LDAP has your groups.
+
+4. **After the next refresh or after reconnect**  
+   The next refresh runs (every 30 seconds with infra-TAK’s default); TAK Server pulls your group membership from LDAP into the cache. On the next connection (or when the client asks again), it sends the correct channel list.
+
+So you get on because **auth uses a live LDAP check** (user exists → OK). You get no channels because **the channel list comes from a cache that only updates from LDAP on an interval**, so on first connect the cache might not have your groups yet. Two different code paths, one immediate and one on a timer.
+
+**What infra-TAK does:** Connect LDAP sets CoreConfig **`updateinterval="30"`** (30 seconds) so the cache refreshes often and the “no channels” window is usually under 30 seconds. If you already had Connect LDAP run with the old default (60s), run **Connect LDAP** again to apply the 30s interval, then restart TAK Server.
+
+**Why doesn’t the QR code “have” my channels?**  
+The QR code only holds connection info (server, port, etc.). It does not contain your channel list. When you scan it, the client connects and asks the server “what channels do I get?” The server does **not** query LDAP at that moment. It answers from its **cache** of “user → groups,” which it refreshes from LDAP every 30 seconds (with infra-TAK’s default). So the first time you connect, the server sends “whatever is in the cache for you” — and that cache entry is often empty until the next refresh. Your channels are already assigned in LDAP; the server just isn’t reading LDAP on your connection, it’s reading the cache. Hence: wait ~30–45 s or reconnect so the cache has been refreshed and the server sends the right list.
+
+**Practical rule:** After creating a user and assigning groups, wait ~30–45 seconds before scanning the QR code, or have the client disconnect and reconnect once; channels will then appear.
 
 ---
 
@@ -260,7 +288,7 @@ On a **fresh deployment**, if you create a user, assign two (or more) groups, an
    Create the user in TAK Portal and assign the groups you created in step 1. TAK Portal syncs the user and their group memberships to Authentik. If the groups already exist, the user gets the correct `tak_*` groups.
 
 3. **Connect LDAP and sync**  
-   Run **Connect TAK Server to LDAP** before or after; it does not overwrite non-admin users' groups. After adding or changing groups, wait 1–2 minutes and have the client **disconnect and reconnect** so TAK Server (60 s LDAP refresh) sends updated channels.
+   Run **Connect TAK Server to LDAP** before or after; it does not overwrite non-admin users' groups. After adding or changing groups, wait ~30–45 seconds and have the client **disconnect and reconnect** so TAK Server (30 s LDAP refresh with infra-TAK) sends updated channels.
 
 **Who controls groups:**
 
@@ -270,7 +298,7 @@ On a **fresh deployment**, if you create a user, assign two (or more) groups, an
 **If a user still ends up with only ROLE_ADMIN:**
 
 - **Check Authentik first.** Directory → Users → that user → **Groups**. If they already have the right `tak_*` groups there, the problem is the client connection (stale cert or cached membership), not TAK Portal sync. Have them **delete the connection in the TAK client and rescan the QR code** to re-enroll; the new connection will get the correct groups from LDAP.
-- If the user’s groups in Authentik are wrong: add the correct `tak_*` groups (e.g. `tak_Field`), remove `tak_ROLE_ADMIN` if they are not an admin. Save, wait ~1 min, then have the client reconnect (or delete connection and rescan).
+- If the user’s groups in Authentik are wrong: add the correct `tak_*` groups (e.g. `tak_Field`), remove `tak_ROLE_ADMIN` if they are not an admin. Save, wait ~30–45 s, then have the client reconnect (or delete connection and rescan).
 - **Group names**: TAK Server only uses LDAP groups whose `cn` starts with `tak_`. In Authentik, use names like `tak_Field`, `tak_MyTeam`. Names without the `tak_` prefix do not become channels.
 - If you created the user **before** creating any groups in TAK Portal, recreate the user's group membership in Authentik as above, or in TAK Portal (and wait for sync), then reconnect the client.
 
