@@ -307,6 +307,49 @@ sudo systemctl restart takwerx-console
 
 ---
 
+## Merge dev → main (selective — release only)
+
+When you want to release a version but **not** put internal/reference files on `main` (no HANDOFF, PROMPT, testing notes, retention PDFs, etc.), merge only the files users need to run, update, or start fresh. Run from repo root (e.g. `~/infra-TAK`).
+
+**Included on main:** app, overlay, start/scripts, static, modules, Guard Dog scripts, user-facing docs (README, COMMANDS, RELEASE, GUARDDOG, DISK-AND-LOGS, MEDIAMTX-TAKPORTAL-ACCESS, WORKFLOW-8446-WEBADMIN, REFERENCES, email template, OpenAPI spec).
+
+**Excluded from main:** `docs/HANDOFF-LDAP-AUTHENTIK.md`, `docs/PROMPT-update-handoff.txt`, `docs/TAK-Data-Retention-notes.md`, `docs/TAK_Server_Configuration_Guide.pdf`, `docs/TAK-Data-Retention-Tool.pdf`, `TESTING.md`, `scripts/ldap-diagnose-and-fix.sh` (and any other internal-only files you add to dev).
+
+```bash
+git checkout main
+git pull origin main
+git checkout dev -- \
+  app.py \
+  mediamtx_ldap_overlay.py \
+  start.sh \
+  fix-console-after-pull.sh \
+  reset-console-password.sh \
+  .gitignore \
+  static/ \
+  modules/ \
+  scripts/set-docker-log-limits.sh \
+  scripts/guarddog/ \
+  scripts/fix-mediamtx-stream-redirect.sh \
+  README.md \
+  docs/COMMANDS.md \
+  docs/RELEASE-v0.1.9.md \
+  docs/GUARDDOG.md \
+  docs/DISK-AND-LOGS.md \
+  docs/MEDIAMTX-TAKPORTAL-ACCESS.md \
+  docs/WORKFLOW-8446-WEBADMIN.md \
+  docs/REFERENCES.md \
+  docs/email-template-user-created-without-password.html \
+  docs/TAK_Server_OpenAPI_v0.json
+git add -A && git status
+git commit -m "v0.1.9"
+git push origin main
+git checkout dev
+```
+
+**Note:** If a file doesn’t exist on dev (e.g. you removed `scripts/fix-mediamtx-stream-redirect.sh`), drop that line from the `git checkout dev --` list. For a new release, change `docs/RELEASE-v0.1.9.md` to the new release doc and the commit message to the new tag. After pushing, create the tag on main if you use one: `git tag v0.1.9 && git push origin v0.1.9`.
+
+---
+
 ## Remove clone and start over
 
 Stops the console, removes the repo directory (and its `.config`), so you can re-clone from scratch. **Replace `~/infra-TAK` with your actual clone path if different.**

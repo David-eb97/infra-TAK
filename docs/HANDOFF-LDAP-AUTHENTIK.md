@@ -1,8 +1,31 @@
 # infra-TAK Technical Handoff Document
 
-## 0. Current Session State (Last Updated: 2026-03-03 night)
+## 0. Current Session State (Last Updated: 2026-03-05)
 
 **This section is the single source of truth.** Update it when server state changes. This doc is a living handoff between machines -- only describe what is true right now.
+
+### v0.1.9 (2026-03-04 / 2026-03-05) — Connect LDAP, CloudTAK, MediaMTX, COMMANDS
+
+**Connect LDAP / CoreConfig:**
+- When writing CoreConfig (full replace or password resync), the console ensures `adminGroup="ROLE_ADMIN"` is present in the LDAP block (adds if missing, verifies with grep after write, fails with a clear message if missing). Prevents "no channels" / wrong admin console access.
+
+**CloudTAK:**
+- Step 4: Build output streamed; 45 min timeout. Step 5: timeout 600s (10 min). Step 6: Waits for `http://localhost:5000/api/connections` to return 200/401/403 (not just port 5000) before declaring "CloudTAK API is responding (backend ready)" — avoids 502 when Caddy proxies before backend is ready.
+
+**MediaMTX:**
+- No longer uses `infratak` branch. Always clones **default branch** from `takwerx/mediamtx-installer`, then applies `mediamtx_ldap_overlay.py` from infra-TAK repo. Log: "LDAP/Authentik detected — will apply LDAP overlay after install".
+- **Web editor service:** `mediamtx-webeditor.service` is created and enabled/started **only when** `/opt/mediamtx-webeditor/mediamtx_config_editor.py` exists. If clone fails and no local fallback, we skip creating the service (no restart loop). Pip deps and enable/start for webeditor are also gated on that file.
+
+**TAK Server packages:**
+- Deploy and upgrade use `<install_path>/uploads/` (e.g. `/root/infra-TAK/uploads/`). You can rsync or scp the .deb there before running deploy or upgrade.
+
+**COMMANDS.md:**
+- **Pull then restart (two steps):** Separate code blocks for `git fetch/checkout/pull` and `sudo systemctl restart takwerx-console`.
+- **Server impact and memory:** Section with `free -h`, `docker stats --no-stream`, `top -o %MEM` (and %CPU), plus short note on what typically uses the most (TAK Server Java, PostgreSQL, Docker stack).
+- Other: Disk full / container logs, CloudTAK 502 / backend readiness, TAK client "No channels found" and "New groups not synced yet" (60s refresh; client reconnect after 1–2 min).
+
+**Unattended upgrades:**
+- Spinner on the toggle so "Disabling…" is visible while the request runs.
 
 ### v0.1.9 (2026-03-03) — TAK Server PKI, Guard Dog, Client Certs, UI Overhaul
 
@@ -287,13 +310,11 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 # SSH
 ssh root@63.250.55.132
 
-# Pull latest code and restart console
-cd ~/infra-TAK && git pull origin dev && sudo systemctl restart takwerx-console
+# Pull latest code, then restart console (two steps — see docs/COMMANDS.md)
+cd ~/infra-TAK && git fetch origin dev && git checkout dev && git pull origin dev
+sudo systemctl restart takwerx-console
 
-# Run LDAP diagnostic script (run from repo root)
-./scripts/ldap-diagnose-and-fix.sh
-
-# Fix LDAP bindings: Use infra-TAK UI → TAK Server → Connect TAK Server to LDAP
+# Fix LDAP / webadmin: Use infra-TAK UI → TAK Server → Connect TAK Server to LDAP
 # Or manually: the Connect button runs _ensure_ldap_flow_authentication_none() which now recreates missing bindings
 
 # Start TAK Server (currently stopped)

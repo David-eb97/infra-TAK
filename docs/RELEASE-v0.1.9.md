@@ -20,6 +20,42 @@ Release Date: 2026-03-04
 
 ---
 
+## Connect LDAP / CoreConfig
+
+- When writing CoreConfig (full replace or password resync), the console ensures **`adminGroup="ROLE_ADMIN"`** is present in the LDAP block. It adds the attribute if missing and verifies with grep after write; deploy fails with a clear message if it cannot be set. Prevents "no channels" and wrong admin console access (webadmin getting WebTAK instead of admin UI).
+
+---
+
+## CloudTAK deploy
+
+- **Step 4:** Build output streamed; 45 min timeout.
+- **Step 5:** Timeout 600s (10 min).
+- **Step 6:** Waits for **`http://localhost:5000/api/connections`** to return 200, 401, or 403 (not just "port 5000 open") before declaring "CloudTAK API is responding (backend ready)". Avoids 502 when Caddy proxies to map.fqdn before the CloudTAK backend is ready.
+
+---
+
+## MediaMTX
+
+- **Web editor:** The `mediamtx-webeditor` systemd unit is created and enabled/started **only when** `/opt/mediamtx-webeditor/mediamtx_config_editor.py` exists. If the clone fails and there is no local fallback, the service is not created — no restart loop. MediaMTX streaming still works; only the web config UI is unavailable until the editor file is present.
+- **Clone:** Always uses the **default branch** of `takwerx/mediamtx-installer` (no infratak branch). After install, `mediamtx_ldap_overlay.py` from the infra-TAK repo is applied when Authentik/LDAP is present. Log: "LDAP/Authentik detected — will apply LDAP overlay after install".
+
+---
+
+## COMMANDS.md and server visibility
+
+- **Pull then restart (two steps):** Separate copy-paste blocks for pull and for `sudo systemctl restart takwerx-console`.
+- **Server impact and memory:** New section with `free -h`, `docker stats --no-stream`, and `top -o %MEM` / `top -o %CPU` for quick resource snapshots, plus a note on typical heavy users (TAK Server Java, PostgreSQL, Docker stack).
+- **TAK Server packages:** Deploy and upgrade use `<install_path>/uploads/` (e.g. `/root/infra-TAK/uploads/`); you can rsync or scp the .deb there before deploy or upgrade.
+- **Other:** Disk full / container logs, CloudTAK 502 and backend readiness, TAK client "No channels found" and new-groups sync delay (60s refresh; client reconnect after 1–2 min).
+
+---
+
+## Unattended upgrades
+
+- Spinner on the toggle so "Disabling…" is visible while the disable request runs.
+
+---
+
 ## Guard Dog — Full Health Monitoring
 
 Guard Dog is now fully operational with **9 monitors** for TAK Server plus service monitors for Authentik, MediaMTX, Node-RED, and CloudTAK.
@@ -96,16 +132,16 @@ Removed hidden "Manage" ghost elements from module cards for consistent card hei
 
 ## Changes
 
-- `app.py`: Authentik deploy (4GB swap before pull/start, start PostgreSQL first and wait for pg_isready then server/worker), Guard Dog deploy (9 monitors + service monitors, 4GB swap on deploy), Guard Dog sidebar under Console, Apply Docker log limits API + card, collapsible Guard Dog sections (Notifications, DB maintenance, Activity log), TAK Server update flow, client cert creation, cert expiry API, Intermediate CA rotation, Root CA rotation, revoke old CA, ca-info API, collapsible TAK Server/Help sections, console dashboard cert expiry
+- `app.py`: Authentik deploy (4GB swap before pull/start, PostgreSQL first then pg_isready then server/worker), Guard Dog deploy (9 monitors + service monitors, 4GB swap on deploy), Guard Dog sidebar under Console, Apply Docker log limits API + card, collapsible Guard Dog sections, TAK Server update flow, client cert creation, cert expiry API, Intermediate CA rotation, Root CA rotation, revoke old CA, ca-info API, collapsible TAK Server/Help sections, console dashboard cert expiry; **Connect LDAP:** ensure `adminGroup="ROLE_ADMIN"` in CoreConfig LDAP block (add/verify, fail with message if missing); **CloudTAK:** Step 4 stream build/45 min, Step 5 timeout 600s, Step 6 wait for `/api/connections` 200/401/403; **MediaMTX:** clone default branch only, webeditor service/enable/start only when editor file exists; **Unattended upgrades:** spinner on toggle
 - `static/takserver.js`: Extracted TAK Server inline JS to external file
 - `static/guarddog.js`: Guard Dog page JavaScript, `gdSectionToggle`, `gdApplyDockerLogLimits`
 - `scripts/guarddog/`: All monitor scripts, health endpoint, SMS helper
 - `docs/TAK_Server_OpenAPI_v0.json`: In-repo TAK Server OpenAPI 3.1 spec
 - `docs/REFERENCES.md`: Added OpenAPI spec reference
 - `docs/GUARDDOG.md`: Root CA / Int CA monitor and rotation workflow, 4GB swap, Docker log limits
-- `docs/COMMANDS.md`: Pull dev only, restart console, pull+restart, disk full / container logs
+- `docs/COMMANDS.md`: Pull dev only, restart console only, **pull then restart (two steps)**, **server impact and memory** (free, docker stats, top), disk full / container logs, CloudTAK 502/backend readiness, TAK client no channels / new-groups sync
 - `docs/DISK-AND-LOGS.md`: Disk full recovery, Docker log limits, optional journal/prune
-- `docs/HANDOFF-LDAP-AUTHENTIK.md`: Full v0.1.9 session state
+- `docs/HANDOFF-LDAP-AUTHENTIK.md`: Full v0.1.9 session state (Connect LDAP adminGroup, CloudTAK Step 6, MediaMTX webeditor guard, COMMANDS, pull/restart two steps)
 
 ## Status
 
