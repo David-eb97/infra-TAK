@@ -240,7 +240,10 @@ When you scan the QR code and the client connects but says **No channels found**
 4. **CoreConfig has no connections**  
    TAK Server needs at least one Input and one Output in CoreConfig. A fresh install usually has defaults. If you replaced or heavily edited CoreConfig and removed all connections, add them back (or restore a known-good CoreConfig) and restart TAK Server.
 
-**Quick sequence:** Ensure the user has a TAK group in TAK Portal → run **Connect LDAP** if needed → **Restart TAK Server** → scan QR again.
+5. **New groups not synced yet**  
+   TAK Server refreshes group membership from LDAP every 60 seconds. Right after you add a user or assign groups in TAK Portal, the client may connect before the next sync and see no channels. **Have the client disconnect and reconnect** (or close and reopen ATAK) after 1–2 minutes; channels should then appear. No server restart needed.
+
+**Quick sequence:** Ensure the user has a TAK group in TAK Portal → run **Connect LDAP** if needed → if no channels, have the client reconnect after ~1 min.
 
 ---
 
