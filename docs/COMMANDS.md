@@ -267,13 +267,19 @@ If root is 100% full, the cause is often **one huge container log** (e.g. Node-R
 
 ---
 
-## Pull dev and restart console (both)
+## Pull then restart console (two steps)
+
+Run the pull, then run the restart (separate lines):
 
 ```bash
-cd ~/infra-TAK && git fetch origin dev && git checkout dev && git pull origin dev && sudo systemctl restart takwerx-console
+cd ~/infra-TAK && git fetch origin dev && git checkout dev && git pull origin dev
 ```
 
-*(Same path note: use your actual clone path if not `~/infra-TAK`.)*
+```bash
+sudo systemctl restart takwerx-console
+```
+
+*(Use your actual clone path if not `~/infra-TAK`.)*
 
 ---
 
