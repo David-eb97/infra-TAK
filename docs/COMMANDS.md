@@ -13,6 +13,51 @@ Then open the URL shown (e.g. `https://<VPS_IP>:5001`) and set your admin passwo
 
 ---
 
+## Recovery — when nothing loads or you can’t SSH
+
+**Do these in order.** Your data (Authentik, TAK Server, configs) stays on the server; you’re only getting back in and fixing the web/Caddy layer.
+
+**1. Can’t reach any domain (tak, takportal, infratak, etc.)**
+
+- Open **`https://<your-server-IP>:5001`** in the browser (e.g. `https://192.168.1.10:5001`). Accept the self-signed cert warning if prompted.
+- Log in with your **console password** (the one you set when you first ran `./start.sh`). This path does **not** go through Caddy or Authentik, so it works even if both are broken.
+- Once in: go to **Caddy** → **Domains** → click **Save** (to regenerate the Caddyfile and reload Caddy). Then try your domains again.
+
+**2. Can’t SSH in either**
+
+- Log in to your **VPS provider** (DigitalOcean, Linode, Vultr, etc.).
+- **Reboot** the server from the provider’s control panel. Wait 2–3 minutes.
+- Try SSH again. If it still fails, open the provider’s **web console** / **serial console** (no SSH needed) and run the commands in step 3 from there.
+
+**3. Forgot console password or backdoor login fails**
+
+- SSH in (or use the provider’s web console). Go to your infra-TAK install directory, then run:
+  ```bash
+  cd /root/infra-TAK   # or wherever you cloned (e.g. /opt/infra-TAK)
+  sudo ./fix-console-after-pull.sh
+  ```
+  That pins the config path and then runs the password reset script. Enter a new password twice. Then use **`https://<server-IP>:5001`** with the new password.
+
+- If you only need to reset the password (config path is already correct):
+  ```bash
+  cd /root/infra-TAK
+  sudo ./reset-console-password.sh
+  ```
+
+**4. Backdoor works but Caddy still broken**
+
+- From SSH (or from the backdoor you’re now in): check Caddy and force a reload:
+  ```bash
+  sudo systemctl status caddy
+  sudo systemctl start caddy    # if it’s not running
+  sudo systemctl reload caddy   # if it is running but config changed
+  ```
+- From the console (via backdoor): **Caddy** → **Domains** → **Save** to regenerate the Caddyfile, then run the `reload` command above if needed.
+
+These steps are also in the main **README** (backdoor, reset password, recovery). The scripts `fix-console-after-pull.sh` and `reset-console-password.sh` live in the repo root and are intended to be run on the server when you’re locked out or after a bad update.
+
+---
+
 ## TAK Portal enrollment + Authentik (new user password)
 
 When you enroll a user in TAK Portal, they get an email with a link to TAK Portal. In infra-TAK that link goes through **Authentik** first (login/gateway), not straight to a "set password" page. The **standard TAK Portal email template** does not mention this.
