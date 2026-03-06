@@ -91,6 +91,16 @@ The “home” is the hostname where you open Authentik and see the application 
 
 ---
 
+## Authentik — how to update (server + LDAP)
+
+**Where:** Authentik page → **⬆ Update** (when containers are running). That runs `docker compose pull` and `docker compose up -d` in `~/authentik`, so all services (server, worker, LDAP outpost, etc.) pull the image tags defined in `docker-compose.yml` and restart.
+
+**Image tags:** The compose file we use comes from goauthentik.io at **first deploy only**; we don’t re-download it. Server/worker use `${AUTHENTIK_TAG:-<version>}` from the compose (and you can set `AUTHENTIK_TAG` in `~/authentik/.env` to a specific version, e.g. `2025.4.4`). We inject the LDAP outpost so it uses the **same** `AUTHENTIK_TAG` (with the same default). So after an **Update**, server and LDAP stay on the same version and the Authentik admin “outpost version” warning should go away.
+
+**To move to a newer release:** Set `AUTHENTIK_TAG=2025.4.4` (or the version you want) in `~/authentik/.env`, then click **⬆ Update**. Don’t skip major versions; follow [Authentik upgrade docs](https://docs.goauthentik.io/install-config/upgrade) (e.g. 2025.2 → 2025.4 → 2025.6). Back up the PostgreSQL data if you need to roll back.
+
+---
+
 ## Authentik — landing page background (branding)
 
 **Requires authentik 2025.4.0+.** The login/landing page background is controlled by the **Default flow background** setting on the brand.
