@@ -33,11 +33,12 @@ After a VPS reboot, everything that’s **enabled** starts automatically. You do
 
 **Do these in order.** Your data (Authentik, TAK Server, configs) stays on the server; you’re only getting back in and fixing the web/Caddy layer.
 
-**1. Can’t reach any domain (tak, takportal, infratak, etc.)**
+**1. Can’t reach any domain (tak, takportal, infratak, etc.) — fix from backdoor**
 
 - Open **`https://<your-server-IP>:5001`** in the browser (e.g. `https://192.168.1.10:5001`). Accept the self-signed cert warning if prompted.
 - Log in with your **console password** (the one you set when you first ran `./start.sh`). This path does **not** go through Caddy or Authentik, so it works even if both are broken.
-- Once in: go to **Caddy** → **Domains** → click **Save** (to regenerate the Caddyfile and reload Caddy). Then try your domains again.
+- In the console: open **Caddy SSL** (nav) → go to the **Domains** section → click **Save & Reload Caddy**. That regenerates the Caddyfile and restarts Caddy. Wait a few seconds, then try your normal URLs (e.g. `https://tak.yourdomain.com`, `https://infratak.yourdomain.com`).
+- If Caddy was stopped: on the same Caddy page use **Reload** (or **Start** if the page shows it) to start Caddy and apply the config.
 
 **2. Can’t SSH in either**
 
@@ -196,6 +197,18 @@ The “home” is the hostname where you open Authentik and see the application 
 
 **Custom CSS (2025.4.0+)** in the same Brand form can further tweak the look (e.g. overlay, gradients). See [Authentik Custom CSS](https://docs.goauthentik.io/brands/custom-css/).
 
+**Keeping Authentik URL in sync (tak vs authentik subdomain)** — The console’s **Authentik → Update** button syncs the Authentik URL from **Caddy → Domains** into Authentik: .env, brand domain, embedded outpost, and **any proxy provider** that still pointed at `authentik.<fqdn>` (it updates them to `tak.<fqdn>`). So after changing the Authentik domain in Caddy/Domains, click **Authentik → Update** once; you shouldn’t need to fix the brand or provider in the Authentik UI. If the UI still fails (e.g. CSRF), use the API workaround below.
+
+**Can't update Brand in the UI (CSRF errors)** — Update the brand domain via API from the server (replace `tak.test5.takwerx.com` with your Authentik host if different):
+
+```bash
+TOKEN=$(grep AUTHENTIK_BOOTSTRAP_TOKEN= ~/authentik/.env | cut -d= -f2-)
+BRAND_UUID=$(curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9090/api/v3/core/brands/ | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['results'][0]['brand_uuid'] if r.get('results') else '')")
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"domain":"tak.test5.takwerx.com"}' "http://127.0.0.1:9090/api/v3/core/brands/$BRAND_UUID/"
+```
+
+Then restart Authentik so the change is used: `cd ~/authentik && docker compose restart server worker`
+
 ---
 
 ## Authentik password recovery — not receiving email
@@ -309,6 +322,33 @@ cd ~/infra-TAK && git fetch origin dev && git checkout dev && git pull origin de
 ```bash
 sudo systemctl restart takwerx-console
 ```
+
+---
+
+## infratak / subdomain — "This site can't provide a secure connection"
+
+That message usually means Caddy couldn’t get a valid TLS certificate (e.g. Let’s Encrypt) for that hostname. Fix in this order:
+
+1. **DNS** — The hostname you use (e.g. `infratak.yourdomain.com`) must resolve to your server’s **public IP**.  
+   - Either add a **wildcard** `*.yourdomain.com` → server IP, or  
+   - Add an **A record** `infratak` (or `tak`, `takserver`, etc.) → server IP.  
+   Check with: `dig +short infratak.yourdomain.com` (replace with your FQDN). It should return the VPS IP.
+
+2. **Ports 80 and 443 open** — Caddy needs **port 80** for Let’s Encrypt HTTP-01 challenges and **443** for HTTPS.  
+   - On the server: `sudo ufw status` (or firewall-cmd); ensure 80/tcp and 443/tcp are allowed.  
+   - In the **cloud** (DigitalOcean, AWS, etc.): add inbound rules for **TCP 80** and **TCP 443**.
+
+3. **Regenerate and reload Caddy** — From the **backdoor** (`https://<server-IP>:5001`): **Caddy SSL** → **Domains** → **Save & Reload Caddy**. Wait ~30 seconds, then try `https://infratak.yourdomain.com` again.
+
+4. **If it still fails, check Caddy logs** (SSH):
+   ```bash
+   sudo journalctl -u caddy -n 80 --no-pager
+   ```
+   Look for lines like `certificate verification failed`, `challenge failed`, or `acme: authorization error`. Those will tell you if it’s DNS (validation can’t reach your server) or something else.
+
+Until DNS and ports are correct, Caddy won’t get a cert and the browser will show "can't provide a secure connection". Use the **backdoor** (`https://<server-IP>:5001`) to manage the console until then.
+
+**Site loads but browser says "insecure" (self-signed cert)** — Usually Let's Encrypt failed; Caddy fell back to its internal cert. On the server run: `curl -sI https://infratak.test5.takwerx.com/ >/dev/null` then `sudo journalctl -u caddy -n 100 --no-pager | grep -iE 'acme|certificate|error|failed'` to see the ACME error. Fix the cause (rate limit, port 80 not reachable by LE, wrong hostname), then Caddy SSL → Domains → Save & Reload Caddy.
 
 ---
 
