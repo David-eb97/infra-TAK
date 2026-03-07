@@ -16,21 +16,21 @@
 - **TAK Server update (two-server):** Upload both takserver-core and takserver-database .deb; upgrade core locally, restore JDBC in CoreConfig, SCP DB .deb to Server One, install via SSH, start takserver.
 - **Restart controls:** Restart / Restart DB (Server One) / Restart Both / **Sync DB password** (see below) / Update config / Stop / Remove.
 - **VACUUM and CoT DB size:** Run remotely on Server One via SSH when two-server.
-- **Sync DB password:** Button "🔑 Sync DB password" (two-server only). Fetches password from Server One, patches CoreConfig.xml on Server Two, restarts takserver. API: `POST /api/takserver/two-server/sync-db-password`.
+- **Sync DB password:** Button "🔑 Sync DB password" (two-server only). **No SSH to Server One.** Uses password from: (1) the "DB password (from Server One)" field on the page (paste from Server One), or (2) saved password in Settings (from deploy). Patches CoreConfig.xml on Server Two and restarts takserver. API: `POST /api/takserver/two-server/sync-db-password` with optional `{"password": "..."}`.
 
 **Known issue — 8443 / 8446 failing (empty DB password):**
 - **Symptom:** 8443 (cert auth) shows "Exception performing TAK Server authentication" with root cause `PSQLException: The server requested SCRAM-based authentication, but the password is an empty string.` 8446 may show "bad password" or similar. TAK Server startup can be slow; first load may time out.
 - **Cause:** CoreConfig.xml on Server Two has empty `password=""` in the `<connection>` element for the JDBC URL to Server One. Either the password was never captured during deploy or the patch didn’t run (e.g. deploy order, or grep -oP not available on Server One).
-- **Fix (UI):** On TAK Server page (two-server mode), click **Sync DB password**. Waits for restart (~1 min) then retry 8443/8446.
+- **Fix (UI):** On TAK Server page (two-server mode), paste the martiuser password from Server One in the **DB password (from Server One)** field (get it from `/opt/tak/CoreConfig.example.xml` on Server One by any means), or leave blank if already saved from deploy. Click **Sync DB password**. Wait for restart (~1 min) then retry 8443/8446.
 - **Fix (manual):** On Server One run `sudo sed -n 's/.*password="\([^"]*\)".*/\1/p' /opt/tak/CoreConfig.example.xml | head -1` to get password. On Server Two run `sudo sed -i 's/password="[^"]*"/password="PASTE_PASSWORD_HERE"/' /opt/tak/CoreConfig.xml` then `sudo systemctl restart takserver`.
-- **Code:** Password fetch uses `_fetch_db_password_from_server_one(s1_cfg)` — tries `grep -oP` then `sed` on CoreConfig.example.xml and CoreConfig.xml. Deploy steps and "Deploy TAK Server" also fetch and patch when password missing; Sync DB password is the one-shot repair.
+- **Code:** Sync DB password uses request body or settings only (no SSH). Deploy steps and "Deploy TAK Server" may still use `_fetch_db_password_from_server_one(s1_cfg)` when SSH is available; Sync DB password is the no-SSH repair.
 
 **Other two-server notes:**
 - **pg_hba.conf:** Must have a newline before the new `host ... scram-sha-256` line; otherwise it can concatenate with previous line (e.g. `md5host`). Code does `printf "\\nhost ..."` and a repair `sed` for `md5host` → `md5\nhost`.
 - **PostgreSQL start:** Use `pg_ctlcluster 15 main start` (or restart); `systemctl start postgresql` on Debian/Ubuntu often does nothing (ExecStart=/bin/true).
 - **Preflight:** "Run Preflight" was removed; DB port check failed until after Server One was configured.
 
-**Where to continue:** If 8443/8446 still fail after Sync DB password, verify on Server One that `/opt/tak/CoreConfig.example.xml` contains a non-empty `password="..."` and that SSH from Server Two can run the same grep/sed. If password is present on S1 but sync fails, check `_ssh_probe` and key auth. Consider adding a "Show DB password" (from settings) or a test-connection step in the UI.
+**Where to continue:** If 8443/8446 still fail after Sync DB password, ensure the password in the field (or in Settings) matches the martiuser password in `/opt/tak/CoreConfig.example.xml` (or CoreConfig.xml) on Server One. Optional: "Show DB password" (from settings) for debugging.
 
 **Other recent UI/two-server tweaks (2026-03-07):** TAK Server status area: control buttons (Restart, Restart DB, Sync DB password, etc.) moved to a second row below the status/CA text so the cert expiry (Root CA / Intermediate CA) doesn’t wrap. Cert banner: Intermediate CA shown on its own line below Root CA. Guard Dog: per-monitor green/red status dots (Port 8089, Process, Network, OOM, Disk, Cert, etc.) via `/api/guarddog/monitor-health`; cache-bust on guarddog.js with version query.
 
