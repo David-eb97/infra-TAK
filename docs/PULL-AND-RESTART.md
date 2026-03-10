@@ -1,8 +1,16 @@
 # Pull and restart on VPS
 
-Use the explicit branch flow below to avoid pulling the wrong branch.
+Run each command separately (one line at a time). Do not combine commands.
 
-## Dev branch (recommended for testing)
+## Simple dev pull (separate commands)
+
+```bash
+cd /root/infra-TAK
+git pull origin dev
+sudo systemctl restart takwerx-console
+```
+
+## Dev branch (explicit flow)
 
 ```bash
 cd /root/infra-TAK
@@ -20,12 +28,6 @@ git fetch origin
 git checkout main
 git pull --ff-only origin main
 sudo systemctl restart takwerx-console
-```
-
-## Quick current-branch pull (only if you already verified branch)
-
-```bash
-cd /root/infra-TAK && git pull --ff-only && sudo systemctl restart takwerx-console
 ```
 
 *(Repo not in `/root/infra-TAK`? Replace with your actual path.)*
