@@ -76,6 +76,24 @@ These steps are also in the main **README** (backdoor, reset password, recovery)
 
 ---
 
+## Clean deploy — links broken, SSL errors, "no applications"
+
+**Applies to both topologies:** all services on one host, or split (Authentik remote, TAK Server two-server DB+Core, etc.). The same fixes and order work either way.
+
+After a fresh deploy (e.g. Authentik remote → Email Relay → TAK Server, or all-on-one), you may see:
+
+| Symptom | Fix |
+|--------|-----|
+| **Web Admin (takserver.fqdn) — "username/password" error** | With LDAP connected, use the **same** LDAP user/password you use for the infra-TAK console (Authentik). If you haven't connected LDAP yet, use the TAK Server **local admin** password (set during install). |
+| **https://takportal.fqdn — SSL error** | TAK Portal gets a Caddy block only when TAK Portal is **installed**. Deploy TAK Portal from the console, then **Caddy SSL** → **Domains** → **Save & Reload Caddy**. Wait ~30s for Let's Encrypt, then try again. |
+| **TAK Portal page link to takserver.fqdn broken** | Caddy must have the TAK Server block and a valid cert. **Caddy SSL** → **Domains** → **Save & Reload Caddy**. On **TAK Server** page click **Update config** to refresh Caddy + 8446 cert. |
+| **Authentik link from TAK Portal (to tak.fqdn) broken** | Same: **Save & Reload Caddy**. Authentik is served at **tak.***your-fqdn* by default. |
+| **At tak.fqdn (Authentik) — "no applications"** | The console creates Authentik apps (infra-TAK, TAK Portal) when the domain is saved or when you run **Update config** on the Authentik page. Go to **Authentik** → **Update config & reconnect**. Wait for it to finish; then open **tak.***your-fqdn* again. If you just set the domain, re-saving the domain (Caddy → Domains → **Save**) also triggers app creation (including when Authentik is remote). |
+
+**Order that avoids most of this (split or all-on-one):** Set **FQDN** in Caddy first, then deploy Authentik (remote or on this host), then Email Relay, then TAK Server (single or two-server). After TAK Server deploy, click **TAK Server** → **Update config** once. Deploy TAK Portal when ready, then **Caddy** → **Save & Reload** so `takportal.your-fqdn` gets a cert.
+
+---
+
 ## Two-server TAK deploy (split DB + Core)
 
 **How to do it right:** Console runs on Server Two (Core). Do the steps in order so the DB password is captured automatically.
