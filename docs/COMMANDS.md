@@ -69,9 +69,77 @@ After a VPS reboot, everything that’s **enabled** starts automatically. You do
   sudo systemctl start caddy    # if it’s not running
   sudo systemctl reload caddy   # if it is running but config changed
   ```
-- From the console (via backdoor): **Caddy** → **Domains** → **Save** to regenerate the Caddyfile, then run the `reload` command above if needed.
+- **So Caddy starts after reboot:** If you had to run `start caddy` manually, enable it: `sudo systemctl enable caddy`.
+- From the console (via backdoor): **Caddy** → **Domains** → **Save** to regenerate the Caddyfile, then run the `reload` command above if needed. Using **Start** on the Caddy page also enables the service for boot.
 
 These steps are also in the main **README** (backdoor, reset password, recovery). The scripts `fix-console-after-pull.sh` and `reset-console-password.sh` live in the repo root and are intended to be run on the server when you’re locked out or after a bad update.
+
+---
+
+## Clean deploy — links broken, SSL errors, "no applications"
+
+**Applies to both topologies:** all services on one host, or split (Authentik remote, TAK Server two-server DB+Core, etc.). The same fixes and order work either way.
+
+After a fresh deploy (e.g. Authentik remote → Email Relay → TAK Server, or all-on-one), you may see:
+
+| Symptom | Fix |
+|--------|-----|
+| **Web Admin (takserver.fqdn) — "username/password" error** | With LDAP connected, use the **same** LDAP user/password you use for the infra-TAK console (Authentik). If you haven't connected LDAP yet, use the TAK Server **local admin** password (set during install). |
+| **https://takportal.fqdn — SSL error** | TAK Portal gets a Caddy block only when TAK Portal is **installed**. Deploy TAK Portal from the console, then **Caddy SSL** → **Domains** → **Save & Reload Caddy**. Wait ~30s for Let's Encrypt, then try again. |
+| **TAK Portal page link to takserver.fqdn broken** | Caddy must have the TAK Server block and a valid cert. **Caddy SSL** → **Domains** → **Save & Reload Caddy**. On **TAK Server** page click **Update config** to refresh Caddy + 8446 cert. |
+| **Authentik link from TAK Portal (to tak.fqdn) broken** | Same: **Save & Reload Caddy**. Authentik is served at **tak.***your-fqdn* by default. |
+| **At tak.fqdn (Authentik) — "no applications"** | The console creates Authentik apps (infra-TAK, TAK Portal) when the domain is saved or when you run **Update config** on the Authentik page. Go to **Authentik** → **Update config & reconnect**. Wait for it to finish; then open **tak.***your-fqdn* again. If you just set the domain, re-saving the domain (Caddy → Domains → **Save**) also triggers app creation (including when Authentik is remote). |
+| **8446 Web Admin — can't log in (username/password)** | 8446 uses **LDAP** only after you connect it. On **TAK Server** page click **Connect TAK Server to LDAP** (once). Then log in with **webadmin** and the **same password** you set at TAK Server deploy. If it still fails: click **Sync webadmin to Authentik** (green LDAP card), wait a few seconds, then try again. See **docs/WORKFLOW-8446-WEBADMIN.md** for full flow. For **"Invalid Credentials" (LDAP 49)** that keeps happening (same host or remote Authentik), see **8446 / LDAP 49** below. |
+
+**8446 / LDAP 49 (Invalid Credentials) — same host or remote Authentik**
+
+This has happened before; the cause and fix are the same whether Authentik is on the same host or on a **remote** host.
+
+1. **Run Resync LDAP first.** On **TAK Server** page click **Connect TAK Server to LDAP** (or **Resync LDAP** if the card shows it). That fixes the LDAP flow and provider on Authentik (including `authorization_flow` → `ldap-authentication-flow`), syncs webadmin, and restarts the LDAP outpost. Then try 8446 again with **webadmin** and the password from the TAK Server deploy (or the one you set via **Set webadmin password**).
+2. **If it still fails**, check Authentik’s LDAP setup. The handoff doc has the full diagnostic commands: **docs/HANDOFF-LDAP-AUTHENTIK.md** — search for “Diagnostic commands” and “LDAP provider”. Summary:
+   - **LDAP provider:** Both `authentication_flow` and **`authorization_flow`** must point to **`ldap-authentication-flow`**. The outpost uses `authorization_flow` as its bind flow; if that points to an empty or wrong flow, binds fail (403 or 49).
+   - **Flow stages:** “exceeded stage recursion depth” in outpost logs → flow stage problem (e.g. identification stage had `password_stage`). Resync LDAP fixes this via API; for **remote** Authentik the same API is used (`http://<remote_host>:9090`).
+   - **Run diagnostics against the correct host:** If Authentik is **remote**, run the curl commands from the handoff against **`http://<remote_host>:9090`** and use the token from the **remote** `~/authentik/.env` (e.g. `AUTHENTIK_BOOTSTRAP_TOKEN` or `AUTHENTIK_TOKEN`). So: SSH to the Authentik host, then `TOKEN=$(grep AUTHENTIK_BOOTSTRAP_TOKEN ~/authentik/.env | cut -d= -f2)` and use `http://127.0.0.1:9090` in the curls; or from the console host use `http://<remote_authentik_ip>:9090` with the token you get from the remote .env (e.g. via the console’s Sync webadmin path, which reads it over SSH).
+3. **Password:** The password that works for 8446 is the one **in Authentik** for `webadmin`. It is set from the TAK Server deploy password when you run Connect/Resync LDAP or **Sync webadmin to Authentik**. See **Changing the 8446 webadmin password** below.
+
+**Changing the 8446 webadmin password**
+
+- **From the console (recommended):** On **TAK Server** → when LDAP is connected, use **Set webadmin password** in the LDAP card (enter new password + confirm, click **Save password**). Then click **Sync webadmin to Authentik** so Authentik gets the new password. After that, 8446 login uses the new password.
+- **From the deploy flow:** Alternatively, open **Certificate Information**, check **Enable Admin UI**, set **WebAdmin Password** + confirm, then **Deploy TAK Server** (or save config). Then **Sync webadmin to Authentik**.
+- **From Authentik:** In Authentik Admin → Users → **webadmin** → set password there. Then on the TAK Server page click **Sync webadmin to Authentik** with the **same** password in the console's stored value (or the console will still show the old one; the one that works for 8446 is whatever is in Authentik).
+- **Show current password:** On the TAK Server page the LDAP card can show the stored webadmin password (e.g. "Show password") so you know what the console thinks it is; 8446 uses whatever is in Authentik, so if login fails, run Sync webadmin to push the stored password to Authentik.
+
+**Remote Authentik and 8446 (shipping advice)**
+
+8446 over LDAP is **most reliable when Authentik is on the same host** as the console. **Remote** Authentik is supported (flow fix, Sync webadmin, and Resync LDAP all run against the remote API), but 8446 login can still fail with "Invalid Credentials" and may require manual checks on the Authentik host (LDAP provider flows, outpost logs). **If you need 8446 to work with minimal fuss for a release:** deploy Authentik **on the same host** as the console (all-on-one). Use remote Authentik when you're okay doing the 8446/LDAP 49 diagnostics if needed.
+
+**v0.2.1 improvements:** When Authentik is remote, **Connect LDAP** and **Sync webadmin** first check that the console can reach the Authentik API (port **9090**) on the Authentik server; if not, you get a clear error (e.g. open firewall from console host to Authentik:9090). If the LDAP flow fix fails, **Connect LDAP** now returns an error instead of continuing, so you don't get a false "success" and then 8446 still fails. Use **Set webadmin password** on the TAK Server page (LDAP card) to set a known password, then **Sync webadmin to Authentik**. Remote Authentik deploy opens ports 9090, 9443, 389, 636 on the remote host (UFW or firewalld). **Tested on SSD Nodes** (single node or public IP reachability); on your own metal or other VPS providers you may need to open those ports manually. **Same class of issue as CloudTAK across two VPSes:** if console and Authentik are on two separate machines, we open the port on the Authentik host, but some providers use internal networks or extra firewall layers (e.g. linking two VPSes over a “private” network). In those setups, host UFW alone may not be enough — you may need provider-level or internal-network rules; we couldn’t get that working in every environment.
+
+**Order that avoids most of this (split or all-on-one):** Set **FQDN** in Caddy first, then deploy Authentik (remote or on this host), then Email Relay, then TAK Server (single or two-server). After TAK Server deploy, click **TAK Server** → **Update config** once. Deploy TAK Portal when ready, then **Caddy** → **Save & Reload** so `takportal.your-fqdn` gets a cert.
+
+**Same-host vs remote (TAK Portal + Authentik):** When Authentik is on the same host, the TAK Portal container reaches it via **http://<server_ip>:9090 (Settings → Server IP)** (deploy adds `extra_hosts` so that hostname resolves and sets **AUTHENTIK_URL** in the container environment so it overrides the repo’s `.env` if that had 127.0.0.1:9090). When Authentik is remote, TAK Portal uses the remote host:9090. Ensure **Server IP** is set in Settings. Changes for remote must not break same-host.
+
+
+---
+
+## Two-server TAK deploy (split DB + Core)
+
+**How to do it right:** Console runs on Server Two (Core). Do the steps in order so the DB password is captured automatically.
+
+1. **Save Config** — Set Server One host, SSH user/port/key (or password). Use “Use this infra-TAK host as Server Two” so the console host is Server Two.
+2. **Setup SSH key** — Creates a key on this host if needed.
+3. **Copy key to Server One** — One-time; you’ll be prompted for Server One’s SSH password. After this, the console can SSH to Server One without a password.
+4. **Deploy Server One (DB)** — Copies the database .deb to Server One, installs it, configures PostgreSQL and firewall. At the end it **reads the DB password from Server One over that same SSH** and saves it, and **installs the Guard Dog health agent** on Server One (port 8080) so the Remote DB Health Agent monitor can go green once Guard Dog is deployed. You should see “DB password captured automatically. Move to step 5.”
+5. **Deploy Server Two (Core)** — Installs the core .deb on this host and points CoreConfig at Server One’s DB using the saved password.
+6. Fill out **Certificate Information**, then click **Deploy TAK Server** to generate certs and finish.
+
+**Why might the password not be captured in step 4?**
+
+- **SSH not set up** — If you skipped steps 2–3 or the key wasn’t copied, the console can’t run `sudo cat /opt/tak/CoreConfig.example.xml` on Server One. Fix: run steps 2 and 3, then run step 4 again (or paste the password manually; see below).
+- **File not there yet** — Some TAK database packages create `/opt/tak/CoreConfig.example.xml` only after a service starts or in a slightly different path. Step 4 runs the fetch right after install; if the file isn’t created until later, the read can fail. Fix: on Server One run `sudo cat /opt/tak/CoreConfig.example.xml` (or `CoreConfig.xml`) and look for `password="..."` in the connection block. Paste that value into the “DB password (from Server One)” field and **Save Config**, then run step 5.
+- **Empty or different format** — The file exists but the password is empty or in a format the parser doesn’t match. Same fix: open the file on Server One, copy the password, paste it in the wizard and Save Config.
+
+If the password wasn’t captured, the UI will say “step 5 needs it.” Paste the password from Server One into the DB password field, click **Save Config**, then click **5. Deploy Server Two (Core)**.
 
 ---
 
@@ -327,6 +395,18 @@ sudo systemctl restart takwerx-console
 
 ---
 
+## Update Now — "dubious ownership" (git safe.directory)
+
+If **Update Now** in the console fails with `fatal: detected dubious ownership in repository at '...'`, the process running the update (e.g. root) doesn’t own the repo directory (e.g. it was cloned by another user). Git 2.35.2+ blocks this for security. **Fix:** on the server, add the repo as a safe directory for the user that runs the update (usually root):
+
+```bash
+sudo git config --global --add safe.directory /path/to/infra-TAK
+```
+
+Use the path shown in the error (e.g. `/home/tntakazureadmin/infra-TAK`). After that, **Update Now** should work. Newer console versions run `git -c safe.directory=<path>` so this is only needed if you hit the error before updating or on older installs.
+
+---
+
 ## infratak / subdomain — "This site can't provide a secure connection"
 
 That message usually means Caddy couldn’t get a valid TLS certificate (e.g. Let’s Encrypt) for that hostname. Fix in this order:
@@ -542,7 +622,15 @@ If root is 100% full, the cause is often **one huge container log** (e.g. Node-R
 
 ## Pull then restart console (two steps)
 
-Run the pull, then run the restart (separate lines):
+**One-liner script (from repo root):**
+
+```bash
+cd /path/to/infra-TAK && chmod +x pull-dev-and-restart.sh && ./pull-dev-and-restart.sh
+```
+
+*(First time: `chmod +x pull-dev-and-restart.sh`. After that, `./pull-dev-and-restart.sh` is enough. Uses sudo for the restart.)*
+
+**Or run the steps manually:**
 
 ```bash
 cd ~/infra-TAK && git fetch origin dev && git checkout dev && git pull origin dev
@@ -588,7 +676,7 @@ git checkout dev -- \
   scripts/fix-mediamtx-stream-redirect.sh \
   README.md \
   docs/COMMANDS.md \
-  docs/RELEASE-v0.1.9.md \
+  docs/RELEASE-v0.2.0.md \
   docs/GUARDDOG.md \
   docs/DISK-AND-LOGS.md \
   docs/MEDIAMTX-TAKPORTAL-ACCESS.md \
@@ -597,12 +685,12 @@ git checkout dev -- \
   docs/email-template-user-created-without-password.html \
   docs/TAK_Server_OpenAPI_v0.json
 git add -A && git status
-git commit -m "v0.1.9-alpha"
+git commit -m "v0.2.0-alpha"
 git push origin main
 git checkout dev
 ```
 
-**Note:** If a file doesn’t exist on dev (e.g. you removed `scripts/fix-mediamtx-stream-redirect.sh`), drop that line from the `git checkout dev --` list. For a new release, change `docs/RELEASE-v0.1.9.md` to the new release doc and the commit message to the new tag. After pushing, create the tag on main if you use one: `git tag v0.1.9-alpha && git push origin v0.1.9-alpha`.
+**Note:** If a file doesn’t exist on dev (e.g. you removed `scripts/fix-mediamtx-stream-redirect.sh`), drop that line from the `git checkout dev --` list. For a new release, change `docs/RELEASE-v0.2.0.md` to the new release doc and the commit message to the new tag. After pushing, create the tag on main if you use one: `git tag v0.2.0-alpha && git push origin v0.2.0-alpha`.
 
 ---
 

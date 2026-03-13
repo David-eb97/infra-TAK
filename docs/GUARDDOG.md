@@ -43,7 +43,39 @@ Guard Dog is designed so that **a restart does not trigger another monitor to re
 
 ## Health endpoint
 
-Guard Dog runs a small HTTP service that answers on port 8888 (by default). The path `/health` returns 200 when TAK Server is considered healthy (port 8089 and processes). Use this URL in Uptime Robot or other outside-in monitoring.
+Guard Dog runs a small HTTP service on **port 8080**. The path `/health` returns 200 when TAK Server is considered healthy (port 8089 and processes). infra-TAK's Caddy config also exposes this as `https://<infratak-host>/health`, so Uptime Robot can check over normal HTTPS/443 without opening 8080 publicly. **Use that URL as-is (no port)** in Uptime Robot.
+
+### Dedicated health domain (e.g. health.example.com)
+
+If you want a separate hostname for monitoring (e.g. `https://health.tntak.net/health`), add a server block to the Caddyfile **below** this line so infra-TAK does not overwrite it when it regenerates the file:
+
+```
+# --- User-added blocks (do not remove) ---
+```
+
+Example (add once; it will be preserved across domain changes and deploys):
+
+```
+# --- User-added blocks (do not remove) ---
+health.tntak.net {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Then point DNS for `health.tntak.net` at your server and use `https://health.tntak.net/health` in Uptime Robot.
+
+## Remote Database — Health Agent red
+
+In **two-server** mode, Guard Dog deploys a small **health agent** on Server One (the DB server) that listens on **port 8080** and serves `/health`. The **Health Agent** monitor (under Remote Database in the UI) is **green** when the console can reach `http://<Server One IP>:8080/health` and it returns 200.
+
+**Why it might be red:**
+
+- **Agent not deployed** — The agent is installed automatically during **two-server step 4 (Deploy Server One)** when an SSH key to Server One is set, so a fresh two-server install gets the agent before Guard Dog is deployed. Guard Dog also deploys the agent when you deploy Guard Dog (if two-server + SSH are configured). If you set up two-server after installing Guard Dog, or SSH failed during step 4 or Guard Dog deploy, the agent may not be there. **Fix:** Use **Deploy health agent to Server One** on the Guard Dog page, or re-deploy Guard Dog.
+- **Agent not running on Server One** — On Server One run `systemctl status tak-db-health`. If it’s inactive, run `sudo systemctl start tak-db-health` and `sudo systemctl enable tak-db-health`.
+- **Port 8080 not reachable** — Server Two (the console host) must be able to reach Server One:8080. On Server One run `sudo ufw allow 8080/tcp` (or allow from Server Two’s IP only) and ensure nothing else is blocking 8080.
+- **Agent returns 503** — The agent returns 200 only when PostgreSQL is ready, the `cot` database exists, and disk usage is under 90%. If any of those fail, it returns 503 and the monitor shows red. Fix PG, the database, or disk on Server One.
+
+**TCP + SSH** (the other Remote Database check) only verifies port 5432 and SSH; it does not run the agent. So TCP + SSH can be green while Health Agent is red if the agent isn’t installed or 8080 isn’t open.
 
 ## Alerts
 
