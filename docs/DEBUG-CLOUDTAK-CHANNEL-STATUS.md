@@ -115,7 +115,17 @@ When reporting to **CloudTAK** or **TAK Server**:
 
 ---
 
-## 5. infra-TAK side
+## 5. Related upstream release notes
+
+When asking upstream, these TAK Server release items may be relevant:
+
+- **RELEASE-20 (Feb 2026)** — **“Restore periodic updates to subscription cache”** and **“Add back period updates to subscription cache for non cluster”**. This is a plausible candidate for the ~2 s behavior: a periodic subscription-cache update could be hitting LDAP for admin/webadmin on a short interval. Worth asking whether that path does LDAP lookups and at what interval.
+- **RELEASE-6 (Dec 2025)** — “Fix issue that caused all group names to appear in a users group cache when using a non channels-enabled cert with channels endpoints” — group cache / channels logic.
+- **Auth / Channels** — “Allow granting of Admin role via LDAP backend”, “Grant admin all groups so messaging clients…”, and bug fix “add param to control using all groups for admin in authenticator” — admin + LDAP interaction.
+
+---
+
+## 6. infra-TAK side
 
 - **Connect LDAP** sets CoreConfig `updateinterval="30"` (group cache refresh from LDAP every 30 s). That does not stop the ~2 s loop, which appears to be a separate code path (e.g. per-request or per-connection checks).
 - No infra-TAK config change is known to remove the constant prompt; the fix is in TAK Server or CloudTAK.
