@@ -31,6 +31,17 @@ Run this in a second terminal while you reproduce. Look for connection/channel o
 
 ---
 
+## 1b. Is it CloudTAK? (Stop test)
+
+With the LDAP log running (Terminal 1 above), use the **CloudTAK** module page in the infra-TAK console and click **■ Stop**. Keep watching the LDAP log.
+
+- **If the bind+search traffic stops** → CloudTAK (or its backend) is driving those lookups.
+- **If it keeps going** → something else is (e.g. TAK Server on its own, or another client like 8446 / another tab).
+
+When you’re done testing, start CloudTAK again from the same page (**▶ Start**).
+
+---
+
 ## 2. What this means
 
 - **Direction:** Traffic is **TAK Server → LDAP** (port 389). Authentik/LDAP is not calling TAK Server.
