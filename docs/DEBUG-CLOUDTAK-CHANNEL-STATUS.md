@@ -127,8 +127,9 @@ We tested three TAK Servers, all using Authentik LDAP the same way. On each depl
 
 **Summary**
 
-- Both 5.6 release 22 servers showed **admin** (and on the first, **webadmin**) queried every **~2 seconds**.
+- Both 5.6 release 22 servers showed **admin** (and on the first, **webadmin**) queried every **~2 seconds**. So it’s not a single bad R22 deploy — two separate R22 deployments both show the same behavior.
 - The 5.6 release 20 server showed **other users** (e.g. ASBBFEEDER) at **~30 second** intervals and **no** constant admin/webadmin polling in the same test.
+- All three servers were deployed with **infra-TAK** (same deployment path). The R20 that behaves correctly is also infra-TAK. So the difference is TAK Server version (R20 vs R22), not who deployed or how.
 
 ---
 
