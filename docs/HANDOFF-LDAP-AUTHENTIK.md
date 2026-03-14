@@ -102,6 +102,14 @@ Use docs/HANDOFF-LDAP-AUTHENTIK.md as the single source of truth for what's done
 - **CloudTAK UX fix:** Access card now renders only when `cloudtak.running` is true (not during deploy / stopped), preventing premature user click-through.
 - **TAK Portal branding preservation note:** Release docs now explicitly state that custom branding fields (e.g. `BRAND_LOGO_URL`) are preserved across **Update**, **Update config**, and reconfigure paths.
 
+### TAK Server → LDAP outpost: observed behavior
+
+- **Client:** TAK Server (or a process on the same host as TAK Server) appears in Authentik LDAP outpost logs as `client: "172.18.0.1"` (Docker bridge / host).
+- **Pattern:** Repeated **Bind** (as `cn=adm_ldapservice,ou=users,dc=takldap`, "authenticated from session") followed by **Search** requests for the same user entry: `baseDN": "cn=admin,ou=users,dc=takldap"`, with attributes `[]` or `["memberOf","ntUserWorkstations"]`, scope Base Object, filter `(objectClass=*)`.
+- **Cadence:** This bind+search sequence for `cn=admin` recurs on the order of every **~2 seconds** while CloudTAK (or 8446 / web use) is active; the LDAP outpost logs show many such cycles in a short window (e.g. dozens over ~1 minute).
+- **Direction:** Traffic is TAK Server → Authentik LDAP outpost (port 389). Authentik does not initiate requests to TAK Server.
+- **Observation:** When CloudTAK is open and this pattern is present, CloudTAK frontend can receive 504 Gateway Timeout (HTML) from Caddy when calling its API; the API request is proxied to the CloudTAK backend, which in turn appears to call TAK Server. If TAK Server is slow to respond, Caddy times out and returns 504 with an HTML error page, and the frontend reports "Unexpected token '<'" when parsing the response as JSON.
+
 ### Current operational note — CloudTAK channels/update prompt behavior
 
 - Field observation on two deployments: CloudTAK repeatedly showed channel/update prompts ("channels shit again"). A temporary improvement was seen after **Authentik Update config & reconnect**, but behavior returned.
