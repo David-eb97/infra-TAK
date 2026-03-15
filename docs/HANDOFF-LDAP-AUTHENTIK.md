@@ -5,7 +5,7 @@
 ## Prompt for a new chat (copy and paste this)
 
 ```
-Read docs/HANDOFF-LDAP-AUTHENTIK.md section "0. Current Session State" and the v0.2.0 bullets. We're on v0.2.0.
+Read docs/HANDOFF-LDAP-AUTHENTIK.md section "0. Current Session State" and the v0.2.1 bullets. We're on v0.2.1-alpha.
 
 Summary: Authentik "Update config & reconnect" works for both local and remote deploy; remote reconfigure uses SSH + remote API (no local ~/authentik). We only create Authentik applications for modules that are actually deployed (Node-RED, MediaMTX, TAK Portal); infra-TAK always. Helper _is_module_deployed(settings, key) gates app creation and _repair_embedded_outpost_all_apps. Outpost updates go through _outpost_add_providers_safe so we never remove existing apps. Access policies: admins see infra-TAK + Node-RED (when deployed); all users see MediaMTX + TAK Portal (when deployed).
 
@@ -16,11 +16,31 @@ Use docs/HANDOFF-LDAP-AUTHENTIK.md as the single source of truth for what's done
 
 ---
 
-## 0. Current Session State (Last Updated: 2026-03-13) — v0.2.0-alpha
+## 0. Current Session State (Last Updated: 2026-03-14) — v0.2.1-alpha
 
 **This section is the single source of truth.** Update it when server state changes. This doc is a living handoff between machines -- only describe what is true right now.
 
-**Version:** v0.2.0-alpha (not v0.1.10). Main was updated with selective dev->main release commit `50895d2` and release docs.
+**Version:** v0.2.1-alpha. See `docs/RELEASE-v0.2.1.md` for full changelog.
+
+### v0.2.1-alpha — 2026-03-14 Session Updates (Security, Metrics, JVM Heap, Guard Dog Nickname, CA/Portal)
+
+**Security hardening (SECURITY-AUDIT-v0.2.0-alpha):**
+- Auth header trust gated to loopback only. CloudTAK logs: container allowlist, argv subprocess, lines clamp. TAK uploads: `secure_filename()`. CSRF baseline: same-origin for state-changing `/api/*`. Rate limiting: 12 login/5 min, 240 API writes/min per IP. Security headers: X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, CSP, HSTS on HTTPS.
+
+**Server metrics:**
+- Dashboard and module detail pages show CPU, RAM, disk for local host and for remote deployment targets (fetched via SSH). Remote metrics on Authentik, CloudTAK, MediaMTX, Node-RED pages when deployed remotely.
+
+**TAK Server — JVM heap:**
+- Page shows recommended heap (from total RAM) and current heap (from `/etc/systemd/system/takserver.service.d/heap.conf`). Controls: set custom heap (e.g. 4G, 8G); console writes drop-in and restarts TAK Server. API: `GET /api/takserver/heap-info`.
+
+**Guard Dog — server nickname:**
+- Notifications section: optional **Server nickname** (e.g. Production, Staging). Alerts include nickname + IP/FQDN. **Save email & nickname** applies without redeploy. See GUARDDOG.md.
+
+**CA rotation and TAK Portal:**
+- **Rotate CA** now replaces the server cert with one signed by the new CA (no keep-existing option). After rotation, users re-enroll by scanning new QR; no need to delete server first. **Sync TAK Server CA** button on TAK Portal page (Controls, 🔄): pushes `tak-ca.pem` to portal. Revoke section hides when no old CAs; CA/revoke state refetches on visibility and pageshow. Deploy/sync/revoke/rotate use only **tak-ca.pem** (no caCert.p12 or transition bundle).
+
+**README / release:**
+- Removed "All modules are production-ready" from README. Added v0.2.1-alpha changelog and `docs/RELEASE-v0.2.1.md`. Status: alpha, not production-ready.
 
 ### v0.2.0-alpha — 2026-03-13 Session Updates (DB Credential Drift, Guard Dog Hardening, Package Pinning)
 
