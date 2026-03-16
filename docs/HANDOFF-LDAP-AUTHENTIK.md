@@ -1039,3 +1039,29 @@ Error decoding:
 **Status:** **Implemented and hardened** (see Section 0 — Two-Server Split Mode). Console supports full two-server deploy (Server One = DB, Server Two = Core), Guard Dog remote DB monitoring (TCP, Health Agent, DB Auth with auto-resync), two-server TAK Server update (re-validates password after DB upgrade), Restart DB / Restart Both, Sync DB password (with `_verify_server_one_db_password()` validation), remote VACUUM/CoT size, and Auto-Update Protection (pin/unpin packages). DB credential drift is now detected and auto-repaired by Guard Dog within 2 minutes.
 
 **Future:** Reuse the same pattern (SSH, config sync, health checks) for other services (e.g. Authentik, TAK Portal, MediaMTX on separate hosts) if needed. Design decisions for any new remote services could go in `docs/REMOTE-SERVICES-DEPLOYMENT.md`.
+
+### Link to existing services (v0.3.0 / late v0.2.x)
+
+**Goal:** Let users who already have Authentik, TAK Server, or TAK Portal use infra-TAK for Guard Dog, rotating CA, MediaMTX, Caddy, etc., by **linking** to those existing services instead of deploying new ones. Full design sketch: `docs/LINK-TO-EXISTING-DESIGN.md`. Summary below.
+
+**User story:** I have an existing stack (Authentik + TAK Server, maybe TAK Portal). I deploy infra-TAK as usual, then on each module page I choose **Link to existing** or **Deploy new**. I can mix: e.g. link both Authentik and TAK Server, deploy MediaMTX and Guard Dog.
+
+**UX:** Choice is **per module, on that module’s page** (Authentik, TAK Server, later TAK Portal). Marketplace (or module card) leads to the page where the first choice is: **Deploy new** (current behavior) or **Link to existing** (user supplies URL/token or host/path). Once linked, page shows “Linked” state (read-only or Re-link), not Deploy/Update/Remove.
+
+**Authentik — Link to existing:** User provides Authentik base URL and admin/bootstrap token. Console stores “external Authentik” in settings; no Docker deploy. All flows that talk to Authentik (TAK Portal, Connect LDAP, Email Relay → Configure Authentik, Node-RED app) use this URL + token. Guard Dog: optionally “Monitor external Authentik” = HTTP health check only (no restart).
+
+**TAK Server — Link to existing:** User provides (A) same host: path to TAK (e.g. `/opt/tak`), or (B) remote host: SSH host + user + key + path. Console “adopts” that install: read CoreConfig, offer Connect LDAP (patch to linked Authentik’s LDAP), Rotating CA, Guard Dog. Guard Dog runs same health checks on that host/path; rotating CA targets that path (local or over SSH).
+
+**TAK Portal — Link to existing (optional, later):** User provides TAK Portal URL (and maybe API key). If linked, we don’t deploy; show card “TAK Portal (external)” with link and optional Sync CA. If “Deploy new,” current behavior.
+
+**Modules we still deploy (unchanged):** MediaMTX, Guard Dog, Caddy, Email Relay, Node-RED, CloudTAK — deploy as today. They consume Authentik/TAK Server from settings (which may now point at linked instances).
+
+**Flow order with link:** Caddy (optional) → **Authentik:** Link or Deploy → Email Relay (optional) → **TAK Server:** Link or Deploy → **Connect LDAP** (same step; works if Authentik is linked or deployed) → **TAK Portal:** Link or Deploy. Connect LDAP, rotating CA, and Guard Dog don’t care whether services were deployed or linked; they use settings.
+
+**Settings (conceptual):** e.g. `authentik_mode`: `deployed` | `external`; `authentik_external_url`, `authentik_external_token`; `takserver_mode`: `deployed` | `external`; `takserver_external_host` (optional), `takserver_external_path`, SSH creds if remote. When mode is `external`, we use external_* fields and never run deploy for that module.
+
+**“Installed” meaning:** “Installed” = we deployed it OR we linked to it. Authentik card shows installed and links to page that shows “Linked to https://…” or deploy controls. Marketplace can show “Deploy new or link to existing” for linkable modules.
+
+**Scope:** Phase 1 (v0.3.0 or late v0.2.x): Link for **Authentik** and **TAK Server** only; Connect LDAP and rotating CA work with linked; Guard Dog monitors linked TAK (path + optional SSH). Phase 2: Link for TAK Portal; optional “monitor external Authentik” in Guard Dog. Phase 3: Re-link, “Switch to Deploy new,” onboarding polish.
+
+**Risks:** Token storage (same as current bootstrap token). Version drift (doc/UI: “Tested with Authentik 2024.x / TAK Server 4.x”). Guard Dog on remote TAK reuses existing SSH/remote-host pattern.
