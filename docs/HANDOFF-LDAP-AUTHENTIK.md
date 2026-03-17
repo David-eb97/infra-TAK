@@ -5,22 +5,87 @@
 ## Prompt for a new chat (copy and paste this)
 
 ```
-Read docs/HANDOFF-LDAP-AUTHENTIK.md section "0. Current Session State" and the v0.2.1 bullets. We're on v0.2.1-alpha.
+Read docs/HANDOFF-LDAP-AUTHENTIK.md section "0. Current Session State" — we're on v0.2.6-alpha.
 
-Summary: Authentik "Update config & reconnect" works for both local and remote deploy; remote reconfigure uses SSH + remote API (no local ~/authentik). We only create Authentik applications for modules that are actually deployed (Node-RED, MediaMTX, TAK Portal); infra-TAK always. Helper _is_module_deployed(settings, key) gates app creation and _repair_embedded_outpost_all_apps. Outpost updates go through _outpost_add_providers_safe so we never remove existing apps. Access policies: admins see infra-TAK + Node-RED (when deployed); all users see MediaMTX + TAK Portal (when deployed).
+CRITICAL: v0.2.4-alpha introduced a broken updater (git pull --rebase) that caused rebase conflicts on customer boxes. v0.2.6-alpha fixes it (fetch + force-checkout). See Section 0 for full details, customer recovery command, and new testing protocol (docs/TESTING-UPDATES.md).
 
-Node-RED supports remote deploy: Node-RED page has a "Deployment Target" card (local vs remote SSH). When target is remote, run_nodered_deploy branches to _run_nodered_deploy_remote (mkdir ~/node-red, copy settings.js + docker-compose.yml, docker compose up -d, Caddy, optional Authentik app). Caddy uses _get_nodered_upstream(settings); deploy POST sends config; generic routes: /api/nodered/deployment-config (save), /api/nodered/remote/ensure-ssh-key, install-ssh-key, test.
+v0.2.5-alpha fixed: MediaMTX External Sources UI corruption (stale overlay on server), Guard Dog Updates monitor staying red (missing systemd timer). v0.2.6-alpha fixed: Update Now button rebase conflicts (rewrote updater to use deterministic git checkout --force).
 
 Use docs/HANDOFF-LDAP-AUTHENTIK.md as the single source of truth for what's done and what to do next.
 ```
 
 ---
 
-## 0. Current Session State (Last Updated: 2026-03-14) — v0.2.1-alpha
+## 0. Current Session State (Last Updated: 2026-03-16) — v0.2.6-alpha
 
 **This section is the single source of truth.** Update it when server state changes. This doc is a living handoff between machines -- only describe what is true right now.
 
-**Version:** v0.2.1-alpha. See `docs/RELEASE-v0.2.1.md` for full changelog.
+**Version:** v0.2.6-alpha. See `docs/RELEASE-v0.2.6-alpha.md` for full changelog.
+
+### v0.2.6-alpha — 2026-03-16 HOTFIX: Update Now rebase conflict
+
+**CRITICAL BUG INTRODUCED IN v0.2.4-alpha, FIXED IN v0.2.6-alpha:**
+
+The `update_apply()` endpoint (Update Now button) used `git pull --rebase --autostash` followed by a tag checkout. On customer boxes with any non-trivial git state (detached HEAD from prior tag checkout, stale rebase metadata, local divergence), git would attempt to replay commit history and hit rebase conflicts:
+
+```
+warning: skipped previously applied commit ...
+Rebasing (1/151) error: could not apply 61d03db... Add files via upload
+```
+
+This left the console repo in an unresolvable conflict state that required manual CLI intervention.
+
+**Root cause:** The tag checkout step was added in v0.2.4-alpha to fix a cosmetic issue (version banner not clearing after update). The `pull --rebase` + tag checkout combo created a state where git tried to rebase branch history onto a tag, which is fundamentally wrong for field installs that may be on detached HEAD or have diverged local state.
+
+**Fix (v0.2.6-alpha):** Rewrote `update_apply()` to use a deterministic, conflict-proof strategy:
+1. Abort stale in-progress git operations (rebase, merge, cherry-pick) if present.
+2. `git fetch --tags origin` (safe, no local state changes).
+3. Resolve latest tag from GitHub API (`_fetch_latest_tag_name()`).
+4. `git checkout --force <tag>` (or fallback `refs/remotes/origin/main`).
+5. Restart console.
+
+No pull. No rebase. No merge. No possibility of conflict.
+
+**Affected versions:** v0.2.4-alpha, v0.2.5-alpha (both had the `pull --rebase` updater).
+
+**Customer recovery (any version, including stuck-in-rebase):**
+```bash
+cd $(grep -oP 'WorkingDirectory=\K.*' /etc/systemd/system/takwerx-console.service) && git fetch --tags origin && git checkout --force v0.2.6-alpha && sudo systemctl restart takwerx-console
+```
+
+**Lesson learned:** Never use `git pull --rebase` in an automated customer-facing update flow. Field installs have unpredictable git state. Use deterministic fetch + force-checkout only.
+
+**Testing protocol added:** `docs/TESTING-UPDATES.md` documents how to test the Update Now button before any release (fake VERSION down, trigger update against existing tag, verify, then release). Rule: **never push a tag until Update Now has been tested on a VPS.**
+
+### v0.2.5-alpha — 2026-03-16 Session: MediaMTX overlay + Guard Dog timer fixes
+
+**MediaMTX External Sources UI corruption (stale overlay):**
+- **Symptom:** On infra-TAK deployments, the MediaMTX External Sources page showed duplicate Private/Public badges, duplicate Share Link buttons, and broken layout. The KU-band simulator column worked fine (same page). Non-infra-TAK deployments on the exact same MediaMTX version looked perfect.
+- **Root cause:** `/opt/mediamtx-webeditor/mediamtx_ldap_overlay.py` on the server was stale — it still contained legacy JS injector code (`vis-badge`, `_visCache`, `_makeShareBtn`, `_hideUpstreamHlsBtns`, `setInterval(...,2000)`) that mutated External Sources rows after render. The core web editor template was correct; the overlay was injecting extra controls on top.
+- **Diagnosis method:** `grep -n "vis-badge\|_visCache\|_makeShareBtn" /opt/mediamtx-webeditor/mediamtx_ldap_overlay.py` on the server showed hits. After replacing with the current repo version, grep returned nothing and UI was fixed.
+- **Fix:** `mediamtx_recovery()` (Patch web editor) now always syncs `mediamtx_ldap_overlay.py` from the running infra-TAK repo to `/opt/mediamtx-webeditor/` before restarting the web editor service. This ensures existing installs converge to current overlay behavior regardless of what was previously on disk.
+- **Operator action:** Click **Patch web editor** once on the MediaMTX page.
+
+**Guard Dog Updates monitor staying red:**
+- **Symptom:** Guard Dog "Updates" row showed green parent dot but red "Update check" monitor dot.
+- **Root cause:** The `updates_check` health check runs `systemctl is-enabled takupdatesguard.timer`. On some installs, this timer unit file was never created (older Guard Dog deploys predated the updates monitor). Clicking "Update Guard Dog" only refreshed scripts, not systemd units.
+- **Fix:** `guarddog_update()` (`POST /api/guarddog/update`) now also writes `takupdatesguard.service` and `takupdatesguard.timer` to `/etc/systemd/system/`, runs `daemon-reload`, and `enable --now takupdatesguard.timer`. It also calls `_guarddog_refresh_page_cache()` so the UI updates immediately.
+- **Operator action:** Click **↻ Update Guard Dog** once.
+
+**Guard Dog UX improvements:**
+- Button text changed from `↻ Update` to `↻ Update Guard Dog` for clarity.
+- Update success message now auto-clears after 5 seconds (was persistent).
+- `gdUpdate()` in `static/guarddog.js` deduplicated (was defined 4 times due to prior patching).
+- After successful update, health and monitor dots refresh immediately (calls `gdRefreshHealth()` + `gdRefreshMonitorHealth()`).
+- Updates monitor description text now includes: "If this monitor is red or missing, click Update Guard Dog above to reinstall/update timers and scripts."
+
+**Other code changes in this session:**
+- `app.py`: `MEDIAMTX_EDITOR_REF = "main"` constant added for deterministic core ref support (not yet pinned to a specific tag).
+- `app.py`: `mediamtx_recovery()` docstring updated to reflect new overlay sync step.
+- `docs/RELEASE-v0.2.5-alpha.md`, `docs/RELEASE-v0.2.6-alpha.md` created.
+- `docs/TESTING-UPDATES.md` created (pre-release update test protocol).
+- `docs/COMMANDS.md` release example updated to v0.2.6-alpha.
+- `README.md` changelog updated with v0.2.5 and v0.2.6 entries.
 
 ### v0.2.1-alpha — 2026-03-14 Session Updates (Security, Metrics, JVM Heap, Guard Dog Nickname, CA/Portal)
 
@@ -101,7 +166,7 @@ Use docs/HANDOFF-LDAP-AUTHENTIK.md as the single source of truth for what's done
 - `docs/SECURITY-AUDIT-v0.2.0-alpha.md` created with vulnerability assessment and hardening recommendations.
 - Initial hardening applied: CSRF protection considerations, rate limiting, `secure_filename` for uploads, security headers (CSP, HSTS, Referrer-Policy, Permissions-Policy).
 
-### Current monitoring state (2026-03-13 evening)
+### Current monitoring state (2026-03-16 evening)
 
 **Active test on test8.taktical.net:**
 - `unattended-upgrades` **ON** (not pinned)
@@ -522,7 +587,8 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 - **No user-profile.pref popup** -- fixed by stripping extra LDAP attributes
 - **Authentik SMTP auto-configuration** -- Email Relay deploy auto-configures Postfix inet_interfaces, mynetworks, firewall rules
 - **App access policies** -- auto-created on Authentik deploy
-- **MediaMTX LDAP overlay** -- fully working: Authentik header auth, Web Users page, stream visibility (public/private), tokenized share links, themed viewer page, self-healing overlay
+- **MediaMTX LDAP overlay** -- fully working: Authentik header auth, Web Users page, stream visibility (public/private), tokenized share links, themed viewer page, self-healing overlay. **Stale overlay bug fixed:** `mediamtx_recovery()` now syncs overlay from repo before restart.
+- **Update Now button** -- working (v0.2.6-alpha): deterministic `fetch --tags` + `checkout --force`. Pre-release testing protocol in `docs/TESTING-UPDATES.md`.
 - **TAK Portal dashboard metrics** -- working (requires full TAK_URL with `:8443/Marti`)
 - **TAK Portal email auto-config** -- pulls SMTP settings from Email Relay module if deployed
 - **TAK Portal group filtering** -- `GROUPS_HIDDEN_PREFIXES` hides `vid_` and `tak_ROLE_` groups
@@ -539,7 +605,8 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 - **Console dashboard cert expiry** -- Root/Int CA time remaining on TAK Server module card, color-coded
 
 ### What's Broken (Verified)
-- Nothing critical. LDAP fully resolved.
+- Nothing critical as of v0.2.6-alpha. LDAP fully resolved. Update Now conflict bug resolved.
+- **Customer installs on v0.2.4 or v0.2.5 need the one-line recovery command** (see Section 0 → v0.2.6-alpha) if they attempted an update and hit the rebase conflict.
 
 ### Changes Made to app.py (Cumulative)
 
@@ -565,6 +632,14 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 
 9. **Help page and Uninstall-all (2026-03-02):** Sidebar "Help" link and `HELP_TEMPLATE` at `/help`: backdoor (IP:5001), console password, reset form (`POST /api/console/password/reset`), full-lockout wording (CLI + README). Uninstall all moved to Help only (removed from Console template); modal with password + "UNINSTALL" confirm. Full uninstall: Caddy step purges package and removes `/usr/bin/caddy`, `/usr/local/bin/caddy`, `/etc/caddy`; Caddy page uninstall does same. In `detect_modules()`: when Caddy binary exists but service is disabled and inactive, one-time cleanup removes binary and `/etc/caddy` so card disappears (fixes leftover after uninstall before this commit). Auto-updates: show "Running..." only when enabled and running; disable also stops/disables `apt-daily-upgrade.timer`.
 
+10. **Session 2026-03-16 (v0.2.5 + v0.2.6 hotfix):**
+    - **`mediamtx_recovery()`**: Always copies current `mediamtx_ldap_overlay.py` from repo to `/opt/mediamtx-webeditor/` before restarting web editor. Prevents stale overlay causing UI corruption.
+    - **`guarddog_update()`** (~L3470): Writes `takupdatesguard.service` + `.timer` to `/etc/systemd/system/`, runs `daemon-reload`, `enable --now takupdatesguard.timer`, calls `_guarddog_refresh_page_cache()`.
+    - **Guard Dog HTML**: "↻ Update" → "↻ Update Guard Dog"; updates monitor description hints at clicking the button if red.
+    - **`static/guarddog.js` `gdUpdate()`**: Auto-clears success message after 5s; refreshes health/monitor dots immediately after update.
+    - **`VERSION`** bumped from `0.2.4-alpha` → `0.2.6-alpha`.
+    - **`update_apply()` REWRITE** (~L1572-L1608): Replaced `git pull --rebase --autostash` with: abort stale git ops → `fetch --tags origin` → resolve latest tag via `_fetch_latest_tag_name()` → `git checkout --force <tag>` (fallback `refs/remotes/origin/main`) → restart. Zero conflict risk.
+
 ### Key Files Changed
 - `app.py` — All prior changes plus (v0.1.9): Guard Dog deploy with 9 monitors + service monitors, TAK Server update flow (upload/progress/cancel), client cert creation (groups via Marti API), cert expiry API + display, Intermediate CA rotation, Root CA rotation, revoke old CA, ca-info API, collapsible sections (TAK Server page + Help page), console dashboard cert expiry, Help page reorder + left-align. Removed hidden "Manage" spans from console cards.
 - `static/takserver.js` — Extracted TAK Server page inline script. All TAK Server JS: services, deploy, upgrade, cert expiry, groups, client cert creation, CA rotation (intermediate + root), collapsible section toggle.
@@ -574,6 +649,9 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 - `docs/REFERENCES.md` — Added OpenAPI spec entry.
 - `docs/GUARDDOG.md` — Guard Dog documentation with all monitors, VACUUM guidance, scope.
 - `mediamtx_ldap_overlay.py` — Stream visibility, share links, themed viewer, External Sources UI, Admin Active Streams UI
+- `docs/RELEASE-v0.2.5-alpha.md` — MediaMTX overlay + Guard Dog timer fixes release notes
+- `docs/RELEASE-v0.2.6-alpha.md` — Update Now hotfix release notes
+- `docs/TESTING-UPDATES.md` — Pre-release testing protocol for Update Now button (zero customer exposure)
 
 ### Server Access
 ```bash
@@ -583,6 +661,9 @@ ssh root@63.250.55.132
 # Pull latest code, then restart console (two steps — see docs/COMMANDS.md)
 cd ~/infra-TAK && git fetch origin dev && git checkout dev && git pull origin dev
 sudo systemctl restart takwerx-console
+
+# Customer recovery from broken update (v0.2.4/v0.2.5 rebase conflict)
+cd $(grep -oP 'WorkingDirectory=\K.*' /etc/systemd/system/takwerx-console.service) && git fetch --tags origin && git checkout --force v0.2.6-alpha && sudo systemctl restart takwerx-console
 
 # Fix LDAP / webadmin: Use infra-TAK UI → TAK Server → Connect TAK Server to LDAP
 # Or manually: the Connect button runs _ensure_ldap_flow_authentication_none() which now recreates missing bindings
@@ -609,7 +690,7 @@ ldapsearch -x -H ldap://127.0.0.1:389 -D 'cn=adm_ldapservice,ou=users,dc=takldap
 | Field | Value |
 |---|---|
 | **Project name** | infra-TAK |
-| **Version** | 0.1.9 |
+| **Version** | 0.2.6-alpha |
 | **Purpose** | Unified web console for deploying and managing TAK ecosystem infrastructure (TAK Server, Authentik SSO, LDAP, Caddy reverse proxy, TAK Portal, Node-RED, MediaMTX, CloudTAK, Email Relay) |
 | **Intended users** | System administrators deploying TAK (Team Awareness Kit) infrastructure |
 | **Operating environment** | Ubuntu 22.04/24.04 or Rocky Linux 9, single VPS, accessible via `https://<ip>:5001` (backdoor) or `https://infratak.<fqdn>` (behind Authentik) |
@@ -872,6 +953,9 @@ The `ldap-authentication-flow` is defined in `tak-ldap-setup.yaml` blueprint wit
 | 26 | **Cookie domain mismatch for LDAP outpost** | **Outpost connected to Docker internal hostname; `AUTHENTIK_COOKIE_DOMAIN` scoped cookies to FQDN; Go cookie jar never sent auth cookies** | **LDAP outpost `AUTHENTIK_HOST` = `https://authentik.{fqdn}` with `extra_hosts` when FQDN set** |
 | 27 | **Blueprint permission ValueError** | **`search_full_directory` not in `app_label.codename` format; worker crash-looped, flooding PostgreSQL** | **Changed to `authentik_providers_ldap.search_full_directory`** |
 | 28 | **Flow lookup "slug already exists" 400** | **Searched by `designation=authentication` (paginated), missed flow, tried to recreate** | **Search by `slug=ldap-authentication-flow` directly** |
+| 29 | **MediaMTX External Sources UI corruption (infra-TAK only)** | **Stale `mediamtx_ldap_overlay.py` on server had legacy JS injectors (`vis-badge`, `_visCache`, `_makeShareBtn`) duplicating badges/buttons** | **`mediamtx_recovery()` always syncs current overlay from repo to `/opt/mediamtx-webeditor/` before restart. Click Patch web editor.** |
+| 30 | **Guard Dog Updates monitor stays red** | **`takupdatesguard.timer` never created on older installs; `guarddog_update()` only refreshed scripts, not units** | **`guarddog_update()` now writes + enables `.service` + `.timer`, daemon-reload. Click Update Guard Dog.** |
+| 31 | **Update Now causes rebase conflicts (v0.2.4, v0.2.5)** | **`git pull --rebase --autostash` + tag checkout on field installs with detached HEAD / stale git state** | **Rewrote to `fetch --tags` + `checkout --force <tag>`. No pull/rebase/merge. See `docs/TESTING-UPDATES.md`.** |
 
 ---
 
@@ -901,6 +985,15 @@ Match unique substring (`adm_ldapservice`) rather than full `key="value"` patter
 ### 6.8 Blueprint debugging methodology
 When LDAP breaks: check outpost logs FIRST for the specific error. "exceeded stage recursion depth" = flow stage problem. "Access denied" = permission/authorization problem. "Invalid credentials (49)" = password mismatch. Don't change passwords if the error is about stages.
 
+### 6.9 Deterministic updates (fetch + force-checkout)
+Never use `git pull` or `git rebase` in automated update flows. Field installs have git states that are impossible to predict (detached HEAD from tag checkout, stale rebase metadata from prior failed update, etc.). The only safe update pattern: `git fetch --tags origin` → `git checkout --force <tag>`. This works regardless of the repo's current state.
+
+### 6.10 Pre-release update testing (version downgrade trick)
+Before publishing a new tag, temporarily set `VERSION` in `app.py` to an older version on a test VPS. The "Update Now" button will then see the current tag as "newer" and offer an update. Click it and verify the update succeeds end-to-end (no conflicts, correct version after restart) before pushing the new tag to GitHub. Full protocol in `docs/TESTING-UPDATES.md`.
+
+### 6.11 Overlay convergence on recovery
+When a per-module patch file (like `mediamtx_ldap_overlay.py`) exists both in the repo and on the server, recovery/patch actions should always sync repo → server before restarting the service. This guarantees convergence regardless of what stale version is on disk.
+
 ---
 
 ## 7. Known Limitations and Technical Debt
@@ -924,6 +1017,12 @@ When LDAP breaks: check outpost logs FIRST for the specific error. "exceeded sta
 
 - Browser cache causes stale UI
 - No rate limiting or CSRF protection beyond Flask session
+
+### RESOLVED (previously HIGH)
+
+- **Update Now rebase conflicts** — Fixed in v0.2.6-alpha. Updater now uses deterministic `fetch + force-checkout`. Pre-release test protocol in `docs/TESTING-UPDATES.md`.
+- **MediaMTX External Sources UI corruption** — Fixed in v0.2.5-alpha. `mediamtx_recovery()` syncs overlay from repo.
+- **Guard Dog Updates monitor stays red** — Fixed in v0.2.5-alpha. `guarddog_update()` writes + enables systemd timer.
 
 ---
 
@@ -975,6 +1074,9 @@ cd ~/infra-TAK && chmod +x start.sh && sudo ./start.sh
 - **LDAP outpost caches flow execution results** — `docker compose up -d --force-recreate ldap` required after flow changes.
 - **Password MUST be set via API**, never via blueprint. Use `/api/v3/core/users/{pk}/set_password/`.
 - **4-core VMs struggle** under full load. Cascading restarts of Authentik + TAK Server can spike load to 25+ and cause all services to become unresponsive.
+- **NEVER use `git pull --rebase` in `update_apply()` or any automated update flow.** Field installs have unpredictable git state (detached HEAD, stale rebase, local divergence). Always use `fetch + checkout --force`. See problem #31.
+- **MediaMTX overlay on disk can be stale.** If the MediaMTX External Sources UI looks broken (duplicated badges/buttons) on an infra-TAK install but fine on vanilla MediaMTX, the overlay file on the server is outdated. Run Patch web editor or `mediamtx_recovery()`. See problem #29.
+- **Guard Dog Updates timer may not exist on older installs.** If the Updates monitor is red, click Update Guard Dog. `guarddog_update()` now ensures the systemd timer unit exists. See problem #30.
 
 ### Edge-Case Logic That Must Not Be Removed
 
@@ -987,6 +1089,9 @@ cd ~/infra-TAK && chmod +x start.sh && sudo ./start.sh
 - `_ensure_authentik_webadmin`: Must run during Connect flow regardless of deploy order
 - `_ensure_app_access_policies`: Runs after all apps created in Authentik deploy. Idempotent.
 - `ensure_overlay.py`: Self-healing script that re-injects LDAP overlay if upstream editor updates overwrite it. Runs as `ExecStartPre` in systemd service.
+- `update_apply()`: Must use `fetch --tags` + `checkout --force` only. NO `git pull`, NO `git rebase`, NO `git merge`. Any merge-like operation will break on customer installs.
+- `mediamtx_recovery()`: Must copy `mediamtx_ldap_overlay.py` from repo to `/opt/mediamtx-webeditor/` before restarting the web editor service. If this step is removed, old overlay code will persist on server.
+- `guarddog_update()`: Must write + enable `takupdatesguard.timer` systemd unit (not just refresh scripts). If this is removed, the Updates monitor will stay red on installs where the timer was never created.
 
 ### Authentik LDAP Flow Architecture (MUST understand to debug)
 
