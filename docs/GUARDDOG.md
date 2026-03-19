@@ -85,7 +85,7 @@ Configure an alert email in the Guard Dog **Notifications** section. Alerts are 
 
 ### Update notifications (infra-TAK, Authentik, MediaMTX, CloudTAK, TAK Portal)
 
-The **Updates** monitor (under Monitors) runs every **6 hours** and checks for newer versions of infra-TAK, Authentik, MediaMTX (binary + web editor), CloudTAK, and TAK Portal. When the set of available updates **changes**, it sends **one email** to the same alert address (no spam — same set is not re-sent for 7 days).
+The **Updates** monitor (under Monitors) runs every **6 hours** and checks for newer versions of infra-TAK, Authentik, MediaMTX (binary + web editor), CloudTAK, and TAK Portal. When the set of available updates **changes**, it sends **one email** to the same alert address (no spam — same set is not re-sent for 24 hours).
 
 **Not getting update emails?**
 
