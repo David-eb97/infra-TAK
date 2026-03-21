@@ -20,6 +20,10 @@ If migration fails after TAK was stopped, the worker tries to **start `takserver
 
 On **Migrate database to new Server One**: steps **2–3** (SSH key), then **4. Deploy Server One (DB) on new host** — this calls the same deploy API with **`deploy_target_host`** so the database `.deb` is installed on the new IP **without** changing saved `server_one.host` (so migration still knows the old DB source).
 
+## Version match
+
+Keep the **same** `takserver-database` **Debian package version** on the new host as on the current Server One. The console compares `dpkg-deb -f … Version` on your uploaded `.deb` with `dpkg-query -W takserver-database` on the **current** Server One when you run **4. Deploy… on new host** and again when you click **Start migration**. Upload the matching `.deb` from tak.gov if the check fails.
+
 ## Prerequisites
 
 - **Two-server** deployment with a valid current **Server One** in settings.
@@ -29,6 +33,7 @@ On **Migrate database to new Server One**: steps **2–3** (SSH key), then **4. 
 
 ## UI
 
+- **takserver-database .deb panel** — On the migrate card, status + drop zone use the **same `uploads/` folder** as Deploy and Upgrade. If the file was deleted, the panel shows what’s missing and you can upload again without hunting for the main upload area.
 - **New Server One host** — IP or DNS (required).
 - **SSH user (optional)** — overrides `server_one.ssh_user` for the new host only in saved settings.
 - **SSH port** — optional; used for copy-key and migration SSH.
